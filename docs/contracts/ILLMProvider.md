@@ -27,8 +27,8 @@ Genera embedding (vector) de texto.
 
 **Retorna:** Lista de números flotantes (dimensionalidad variable según modelo)
 
-### is_available() → bool
-Valida que el proveedor está operativo.
+### async is_available() → bool
+Valida de forma asíncrona que el proveedor está operativo.
 
 Verifica: conectividad, credenciales, modelo cargado.
 
@@ -36,7 +36,7 @@ Verifica: conectividad, credenciales, modelo cargado.
 Retorna el nombre del modelo actual.
 
 ## Implementaciones Conocidas
-- OllamaProvider (local)
+- OllamaProvider (local) — primera implementación concreta del contrato
 - OpenAIProvider (cloud)
 - ClaudeProvider (cloud, Anthropic)
 - GeminiProvider (cloud, Google)

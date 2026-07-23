@@ -66,16 +66,13 @@ class ILLMProvider(ABC):
         ...
 
     @abstractmethod
-    def is_available(self) -> bool:
-        """Validar que el proveedor está disponible.
+    async def is_available(self) -> bool:
+        """Verificar de forma asíncrona si el proveedor puede operar.
 
-        Verifica:
-        - Conectividad
-        - Credenciales válidas
-        - Modelo cargado
+        Debe validar conectividad y estado mínimo del proveedor.
 
         Returns:
-            True si está disponible, False en otro caso
+            True si está disponible; False en caso de error o timeout
         """
         ...
 
