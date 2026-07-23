@@ -1,0 +1,17 @@
+logging:
+  level: WARNING
+  enabled: false
+
+database:
+  url: sqlite:///:memory:
+  echo: false
+  pool_size: 1
+
+cache:
+  ttl: 0
+  enabled: false
+
+llm:
+  provider: mock
+  model: mock
+  base_url: http://localhost:11434

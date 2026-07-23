@@ -1,0 +1,21 @@
+logging:
+  level: DEBUG
+  format: colored
+  enabled: true
+
+database:
+  url: postgresql://user:password@localhost:5432/aries
+  echo: true
+  pool_size: 5
+
+cache:
+  ttl: 300
+  enabled: true
+
+llm:
+  provider: ollama
+  model: neural-chat
+  base_url: http://localhost:11434
+
+voice:
+  enabled: true

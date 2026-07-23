@@ -1,0 +1,4 @@
+[console_scripts]
+aries = aries.cli:main
+aries-api = aries.api.app:run
+aries-desktop = aries.desktop.app:run

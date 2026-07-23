@@ -1,0 +1,17 @@
+logging:
+  level: INFO
+  format: json
+  enabled: true
+
+database:
+  url: postgresql://user:password@localhost:5432/aries
+  echo: false
+  pool_size: 20
+
+llm:
+  provider: openai
+  model: gpt-4
+  base_url: https://api.openai.com/v1
+
+security:
+  require_auth: true
