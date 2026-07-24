@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Final
 
-from structlog import BoundLogger
+from structlog.stdlib import BoundLogger
 
 from ..config.settings import Settings
-from ..contracts.memory import IMemory
 from ..contracts.llm import ILLMProvider
+from ..contracts.memory import IMemory
 from ..exceptions import KernelError
 from ..logging import get_logger
 
