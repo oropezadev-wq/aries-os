@@ -8,6 +8,8 @@ from typing import Final
 from structlog import BoundLogger
 
 from ..config.settings import Settings
+from ..contracts.memory import IMemory
+from ..contracts.llm import ILLMProvider
 from ..exceptions import KernelError
 from ..logging import get_logger
 
@@ -15,8 +17,15 @@ from ..logging import get_logger
 class Kernel:
     """Kernel central que administra el ciclo de vida del sistema."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        memory: IMemory,
+        llm_provider: ILLMProvider,
+    ) -> None:
         self.settings = settings
+        self.memory = memory
+        self.llm_provider = llm_provider
         self.logger: BoundLogger = get_logger(self.__class__.__name__)
         self._initialized = False
         self._running = False
@@ -34,7 +43,10 @@ class Kernel:
             redis_url=self.settings.redis_url,
         )
 
-        # TODO: Integrar subsistemas de memoria, agentes y plugins en esta fase.
+        disponible = await self.llm_provider.is_available()
+        if not disponible:
+            self.logger.warning("Proveedor LLM no disponible al iniciar")
+
         await asyncio.sleep(0.05)
         self._initialized = True
         self.logger.debug("Kernel inicializado correctamente")

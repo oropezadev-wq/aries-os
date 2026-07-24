@@ -24,7 +24,9 @@
 - `src/aries/types.py`: alias de tipos comunes.
 - `src/aries/memory/in_memory.py`: implementación de IMemory en memoria local.
 - `src/aries/llm/ollama_provider.py`: proveedor Ollama con AsyncClient, complete, embed e is_available.
-- `tests/unit/test_kernel.py`: tests de inicialización y apagado del kernel.
+- `src/aries/core/kernel.py`: kernel inyecta IMemory e ILLMProvider y valida disponibilidad de LLM al iniciar.
+- `src/aries/__main__.py`: construcción de Kernel con InMemoryStore y OllamaProvider usando async context manager.
+- `tests/unit/test_kernel.py`: tests de kernel con fake ILLMProvider y disponibilidad configurable.
 - `tests/unit/test_config.py`: tests de carga de configuración y overrides de env.
 
 ## Qué NO existe todavía (pendiente real)
