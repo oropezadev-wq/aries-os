@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
+
 import pytest
 
 from aries.config.settings import Settings
@@ -43,7 +45,7 @@ def fixture_llm_provider() -> ILLMProvider:
 
 
 @pytest.fixture(name="kernel")
-async def fixture_kernel(app_config: Settings, llm_provider: ILLMProvider) -> Kernel:
+async def fixture_kernel(app_config: Settings, llm_provider: ILLMProvider) -> AsyncGenerator[Kernel, None]:
     """Inicializa un kernel para uso en pruebas asincrónicas."""
     kernel = Kernel(app_config, InMemoryStore(), llm_provider)
     await kernel.initialize()

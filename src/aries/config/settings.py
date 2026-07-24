@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 from pydantic import Field, HttpUrl, SecretStr
@@ -21,11 +20,11 @@ class Settings(BaseSettings):
     redis_url: str = Field("redis://localhost:6379/0", description="URL de Redis")
     llm_provider: str = Field("ollama", description="Proveedor LLM")
     llm_model: str = Field("neural-chat", description="Modelo LLM")
-    llm_base_url: HttpUrl = Field("http://localhost:11434", description="URL base del proveedor LLM")
+    llm_base_url: HttpUrl = Field(HttpUrl("http://localhost:11434"), description="URL base del proveedor LLM")
     voice_enabled: bool = Field(True, description="Activa el soporte de voz")
     api_host: str = Field("0.0.0.0", description="Host de la API")
     api_port: int = Field(8000, description="Puerto de la API")
-    secret_key: SecretStr = Field("change-me-in-production", description="Clave secreta para la aplicación")
+    secret_key: SecretStr = Field(SecretStr("change-me-in-production"), description="Clave secreta para la aplicación")
 
     class Config:
         env_file = ".env"

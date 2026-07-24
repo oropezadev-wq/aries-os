@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from structlog import BoundLogger
+from structlog.stdlib import BoundLogger
 
 from ..contracts.memory import IMemory, MemoryItem
 from ..logging import get_logger
