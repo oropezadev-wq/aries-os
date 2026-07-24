@@ -20,7 +20,7 @@
 - `src/aries/config/settings.py`: configuración de aplicación con Pydantic Settings y .env loading.
 - `src/aries/logging/__init__.py`: inicializa structlog con renderer y logger.
 - `src/aries/api.py`: FastAPI app mínima con endpoint `/health`.
-- `src/aries/exceptions.py`: excepciones personalizadas definidas.
+- `src/aries/exceptions/__init__.py`: excepciones personalizadas definidas.
 - `src/aries/types.py`: alias de tipos comunes.
 - `src/aries/memory/in_memory.py`: implementación de IMemory en memoria local.
 - `src/aries/llm/ollama_provider.py`: proveedor Ollama con AsyncClient, complete, embed e is_available.
@@ -37,9 +37,11 @@
 - No hay persistencia de memoria.
 - No hay planner ni ejecución de tools definidos en el código.
 - No hay implementación de subsistema de voz.
+- `src/aries/events/`: existe implementación de Event Bus con tests, pero aún no está integrada en el kernel ni revisada en profundidad.
+- `src/aries/container/`: eliminado, no forma parte del path de ejecución actual.
 
 ## Próximo paso recomendado
-Implementar una clase concreta mínima que extienda `IAgent` y permita ejecutar acciones del sistema.
+Revisar la implementación existente de `events/` antes de decidir si se completa o se rehace.
 
 ## Reglas para mantener este archivo
 - Actualizar la tabla y "Qué existe implementado" al cerrar cada tarea, una línea por módulo
