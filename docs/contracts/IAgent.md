@@ -35,6 +35,8 @@ result = await agent.execute("run_container", image="nginx", ports=[80])
 - `data`: Datos estructurados (JSON-compatible)
 - `execution_time_ms`: Tiempo de ejecución
 
+**Nunca debe propagar excepciones.** Cualquier error durante la ejecución (permisos, recurso no encontrado, timeout, etc.) se captura dentro de `execute()` y se retorna como `ActionResult(status=FAILED, error=<mensaje>)`; `execute()` nunca deja escapar una excepción sin capturar hacia quien lo llama.
+
 ### get_capabilities() → list[str]
 Lista acciones disponibles.
 
@@ -44,10 +46,18 @@ Lista acciones disponibles.
  "create_directory", "run_process", "get_system_info"]
 ```
 
-### requires_confirmation(action) → bool
+### requires_confirmation(action, command=None, **kwargs) → bool
 Verifica si una acción requiere confirmación.
 
 Acciones destructivas o peligrosas deben retornar `True`.
+
+Una implementación puede aceptar un kwarg opcional `command: str | None`
+además de `action`, para evaluar el contenido concreto de la acción (por
+ejemplo, si el string de un `run_command` contiene un comando destructivo
+conocido como `rm`, `del`, `format`, etc.) en vez de decidir solo por el
+nombre de la acción. Debe ser retrocompatible: `requires_confirmation(action)`
+sin `command` sigue siendo una llamada válida (ver `ProcessAgent`, que usa
+esto para `run_command`).
 
 ### async is_available() → bool
 Verifica que el agente puede funcionar.

@@ -50,10 +50,9 @@ class IAgent(ABC):
             **kwargs: Parámetros específicos de la acción
 
         Returns:
-            ActionResult con estado y resultado
-
-        Raises:
-            PermissionError: Si falta permiso
+            ActionResult con estado y resultado. Nunca propaga excepciones:
+            cualquier error (permisos, recurso no encontrado, etc.) se
+            captura y se retorna como ActionResult(status=FAILED, error=...).
         """
         ...
 

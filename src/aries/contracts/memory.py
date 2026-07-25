@@ -22,6 +22,7 @@ class MemoryItem:
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
     importance: int = 1  # 1-10
+    expires_at: Optional[datetime] = None
 
 
 class IMemory(ABC):
@@ -42,6 +43,7 @@ class IMemory(ABC):
         memory_type: str,
         metadata: Optional[dict] = None,
         importance: int = 1,
+        expires_at: Optional[datetime] = None,
     ) -> MemoryItem:
         """Almacenar información en memoria.
 
@@ -50,6 +52,8 @@ class IMemory(ABC):
             memory_type: Tipo ("conversation", "preference", etc)
             metadata: Datos adicionales
             importance: Nivel de importancia (1-10)
+            expires_at: Momento en que el item deja de ser válido. `None`
+                (por defecto) significa que el item no expira.
 
         Returns:
             MemoryItem creado

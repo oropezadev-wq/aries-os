@@ -27,6 +27,7 @@ class InMemoryStore(IMemory):
         memory_type: str,
         metadata: Optional[dict] = None,
         importance: int = 1,
+        expires_at: Optional[datetime] = None,
     ) -> MemoryItem:
         if not isinstance(content, str):
             raise TypeError("El contenido debe ser una cadena")
@@ -36,6 +37,8 @@ class InMemoryStore(IMemory):
             raise TypeError("La importancia debe ser un entero")
         if importance < 1 or importance > 10:
             raise ValueError("La importancia debe estar entre 1 y 10")
+        if expires_at is not None and not isinstance(expires_at, datetime):
+            raise TypeError("expires_at debe ser un datetime o None")
 
         memory_id = str(uuid.uuid4())
         item = MemoryItem(
@@ -46,6 +49,7 @@ class InMemoryStore(IMemory):
             created_at=datetime.now(),
             updated_at=datetime.now(),
             importance=importance,
+            expires_at=expires_at,
         )
 
         async with self._lock:
@@ -113,12 +117,22 @@ class InMemoryStore(IMemory):
             return True
 
     async def clear_expired(self) -> int:
+        now = datetime.now()
         async with self._lock:
-            # No hay política de expiración definida en MemoryItem actualmente.
-            self.logger.debug(
-                "clear_expired invocado pero no hay política de expiración definida"
-            )
-            return 0
+            expired_ids = [
+                memory_id
+                for memory_id, item in self._store.items()
+                if item.expires_at is not None and item.expires_at <= now
+            ]
+            for memory_id in expired_ids:
+                del self._store[memory_id]
+
+            if expired_ids:
+                self.logger.info(
+                    "Elementos de memoria vencidos eliminados",
+                    count=len(expired_ids),
+                )
+            return len(expired_ids)
 
     async def get_by_type(self, memory_type: str) -> list[MemoryItem]:
         if not isinstance(memory_type, str):

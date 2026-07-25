@@ -2,42 +2,24 @@ from __future__ import annotations
 
 import asyncio
 import time
-from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
 
 from structlog.stdlib import BoundLogger
 
+from ..contracts.event_bus import Handler, IEventBus
 from ..logging import get_logger
-from ..types import AsyncEventHandler, EventHandler
 from .dispatcher import Dispatcher
 from .event import BaseEvent
 
-Handler = AsyncEventHandler | EventHandler
-EventType = str | type[BaseEvent]
+if TYPE_CHECKING:
+    # `EventType` no se importa en tiempo de ejecución para evitar un ciclo
+    # con `aries.contracts.event_bus` (ver docs/audits/2026-07-24-diagnostico.md).
+    # Es seguro porque este módulo usa `from __future__ import annotations`,
+    # así que las anotaciones nunca se evalúan en runtime.
+    from ..contracts.event_bus import EventType
 
 
-class EventBus(ABC):
-    """Contrato del bus de eventos asincrónico.
-
-    El Event Bus expone una API simple de publish/subscribe/unsubscribe.
-    """
-
-    @abstractmethod
-    async def publish(self, event: BaseEvent) -> None:
-        """Publica un evento en el bus."""
-        ...
-
-    @abstractmethod
-    async def subscribe(self, event_type: EventType, handler: Handler) -> None:
-        """Suscribe un handler a un tipo de evento."""
-        ...
-
-    @abstractmethod
-    async def unsubscribe(self, event_type: EventType, handler: Handler) -> None:
-        """Desuscribe un handler de un tipo de evento."""
-        ...
-
-
-class AsyncEventBus(EventBus):
+class AsyncEventBus(IEventBus):
     """Implementación asincrónica del Event Bus.
 
     Internamente usa identificadores estables basados en módulo y qualname para

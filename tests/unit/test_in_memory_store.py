@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -111,3 +112,55 @@ async def test_concurrent_access_is_safe() -> None:
 
     results = await store.search("message", limit=20)
     assert len(results) == 20
+
+
+@pytest.mark.asyncio
+async def test_store_without_expires_at_defaults_to_none() -> None:
+    store = InMemoryStore()
+
+    item = await store.store("hola", "conversation")
+
+    assert item.expires_at is None
+
+
+@pytest.mark.asyncio
+async def test_store_rejects_non_datetime_expires_at() -> None:
+    store = InMemoryStore()
+
+    with pytest.raises(TypeError):
+        await store.store("hola", "conversation", expires_at="not-a-datetime")
+
+
+@pytest.mark.asyncio
+async def test_clear_expired_removes_only_items_past_expiration() -> None:
+    store = InMemoryStore()
+    now = datetime.now()
+
+    expired = await store.store(
+        "vencido", "context", expires_at=now - timedelta(seconds=1)
+    )
+    fresh = await store.store(
+        "vigente", "context", expires_at=now + timedelta(hours=1)
+    )
+    permanent = await store.store("sin vencimiento", "context")
+
+    deleted = await store.clear_expired()
+
+    assert deleted == 1
+    assert await store.retrieve(expired.id) is None
+    assert await store.retrieve(fresh.id) is not None
+    assert await store.retrieve(permanent.id) is not None
+
+
+@pytest.mark.asyncio
+async def test_clear_expired_is_idempotent() -> None:
+    store = InMemoryStore()
+    await store.store(
+        "vencido", "context", expires_at=datetime.now() - timedelta(seconds=1)
+    )
+
+    first_pass = await store.clear_expired()
+    second_pass = await store.clear_expired()
+
+    assert first_pass == 1
+    assert second_pass == 0

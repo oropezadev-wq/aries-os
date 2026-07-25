@@ -14,7 +14,7 @@ Define cómo almacenar, recuperar y gestionar información en memoria.
 
 ## Métodos Requeridos
 
-### async store(content, memory_type, metadata, importance) → MemoryItem
+### async store(content, memory_type, metadata, importance, expires_at) → MemoryItem
 Guarda información.
 
 **Retorna:** MemoryItem con ID, timestamps, etc.

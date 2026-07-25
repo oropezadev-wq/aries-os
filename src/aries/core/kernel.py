@@ -7,6 +7,7 @@ import asyncio
 from structlog.stdlib import BoundLogger
 
 from ..config.settings import Settings
+from ..contracts.event_bus import IEventBus
 from ..contracts.llm import ILLMProvider
 from ..contracts.memory import IMemory
 from ..exceptions import KernelError
@@ -21,10 +22,12 @@ class Kernel:
         settings: Settings,
         memory: IMemory,
         llm_provider: ILLMProvider,
+        event_bus: IEventBus,
     ) -> None:
         self.settings = settings
         self.memory = memory
         self.llm_provider = llm_provider
+        self.event_bus = event_bus
         self.logger: BoundLogger = get_logger(self.__class__.__name__)
         self._initialized = False
         self._running = False
@@ -48,6 +51,10 @@ class Kernel:
 
         await asyncio.sleep(0.05)
         self._initialized = True
+        from .events import KernelInitializedEvent
+
+        await self.event_bus.publish(KernelInitializedEvent())
+        await self.memory.store("Kernel inicializado", "context", importance=1)
         self.logger.debug("Kernel inicializado correctamente")
 
     async def run(self) -> None:
@@ -75,6 +82,9 @@ class Kernel:
             return
 
         self.logger.info("Apagando kernel")
+        from .events import KernelShutdownEvent
+
+        await self.event_bus.publish(KernelShutdownEvent())
         await asyncio.sleep(0.05)
         self._initialized = False
         self.logger.info("Kernel apagado correctamente")
