@@ -1,13 +1,13 @@
 from __future__ import annotations
 
+from ..contracts.event_bus import IEventBus
 from .event import BaseEvent
-from .event_bus import EventBus
 
 
 class EventPublisher:
     """Publicador de eventos que delega en un EventBus."""
 
-    def __init__(self, event_bus: EventBus) -> None:
+    def __init__(self, event_bus: IEventBus) -> None:
         self._event_bus = event_bus
 
     async def publish(self, event: BaseEvent) -> None:

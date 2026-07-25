@@ -8,6 +8,7 @@ import pytest
 
 from aries.config.settings import Settings
 from aries.core.kernel import Kernel
+from aries.events import AsyncEventBus
 from aries.memory.in_memory import InMemoryStore
 from aries.contracts.llm import ILLMProvider
 from aries.contracts.llm import LLMResponse
@@ -47,7 +48,7 @@ def fixture_llm_provider() -> ILLMProvider:
 @pytest.fixture(name="kernel")
 async def fixture_kernel(app_config: Settings, llm_provider: ILLMProvider) -> AsyncGenerator[Kernel, None]:
     """Inicializa un kernel para uso en pruebas asincrónicas."""
-    kernel = Kernel(app_config, InMemoryStore(), llm_provider)
+    kernel = Kernel(app_config, InMemoryStore(), llm_provider, AsyncEventBus())
     await kernel.initialize()
     yield kernel
     await kernel.shutdown()

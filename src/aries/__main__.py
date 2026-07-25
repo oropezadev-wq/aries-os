@@ -5,6 +5,7 @@ from typing import NoReturn
 
 from .config.settings import Settings
 from .core import Kernel
+from .events import AsyncEventBus
 from .llm.ollama_provider import OllamaProvider
 from .memory.in_memory import InMemoryStore
 from .exceptions import AriesException
@@ -19,7 +20,7 @@ async def main() -> None:
     memory = InMemoryStore()
 
     async with OllamaProvider(settings) as llm_provider:
-        kernel = Kernel(settings, memory, llm_provider)
+        kernel = Kernel(settings, memory, llm_provider, AsyncEventBus())
 
         try:
             await kernel.initialize()
