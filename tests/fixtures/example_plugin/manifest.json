@@ -1,0 +1,8 @@
+{
+  "name": "example-plugin",
+  "version": "1.0.0",
+  "author": "Aries OS tests",
+  "description": "Plugin minimo de ejemplo para tests de integracion de PluginRegistry.",
+  "requires": [],
+  "entry_point": "plugin:ExamplePlugin"
+}
