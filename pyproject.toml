@@ -30,6 +30,14 @@ dependencies = [
     "httpx>=0.27.0",
     "click>=8.1",
     "typer>=0.9",
+    # No es solo para el extra `voice`: `contracts/wake_word.py` importa
+    # numpy a nivel de módulo, y `contracts/__init__.py` lo importa de
+    # forma incondicional — cualquier `from aries.contracts.<lo que sea>
+    # import ...` dispara la ejecución de `contracts/__init__.py` primero
+    # (así funciona la inicialización de paquetes en Python), así que
+    # numpy hace falta para importar `aries.contracts` en general, no solo
+    # para correr `voice/` de verdad.
+    "numpy>=1.24",
 ]
 
 [project.optional-dependencies]
@@ -49,10 +57,10 @@ dev = [
 ]
 
 voice = [
-    "pydub>=0.25",
-    "SpeechRecognition>=3.9",
     "piper-tts>=1.2",
     "faster-whisper>=0.10",
+    "sounddevice>=0.5",
+    "openwakeword>=0.6",
 ]
 
 desktop = [
@@ -75,6 +83,7 @@ Issues = "https://github.com/oropezadev/aries-os/issues"
 aries = "aries.__main__:run"
 aries-api = "aries.__main__:run"
 aries-desktop = "aries.__main__:run"
+aries-voice = "aries.voice.__main__:run"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -138,7 +147,7 @@ warn_no_return = true
 strict_optional = true
 
 [[tool.mypy.overrides]]
-module = ["pyside6.*", "faster_whisper.*", "pydub.*"]
+module = ["pyside6.*", "faster_whisper.*", "piper.*", "sounddevice.*", "openwakeword.*"]
 ignore_missing_imports = true
 
 [tool.isort]
