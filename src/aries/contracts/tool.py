@@ -89,8 +89,13 @@ class ITool(ABC):
         ...
 
     @abstractmethod
-    def requires_authorization(self, action: str) -> bool:
+    def requires_confirmation(self, action: str) -> bool:
         """Verifica si una acción es peligrosa y requiere confirmación.
+
+        Mismo nombre de método que `IAgent.requires_confirmation` — unificado
+        el 2026-07-25 (ver `docs/specs/Planner.spec.md`, decisión 4) para que
+        el Planner no tenga que normalizar dos nombres distintos para el
+        mismo concepto. Antes se llamaba `requires_authorization`.
 
         Retorna True para: delete, format, uninstall, shutdown, etc.
         """

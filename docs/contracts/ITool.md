@@ -60,10 +60,17 @@ Verifica:
 - Conectividad (si aplica)
 - Servicios dependientes
 
-### requires_authorization(action: str) → bool
+### requires_confirmation(action: str) → bool
 Verifica si una acción es peligrosa y requiere confirmación.
 
 Retorna True para: `delete`, `format`, `uninstall`, `shutdown`, etc.
+
+Mismo nombre de método que `IAgent.requires_confirmation` (`docs/contracts/IAgent.md`)
+— unificado el 2026-07-25 para que el Planner no tenga que normalizar dos
+nombres distintos para el mismo concepto (antes este método se llamaba
+`requires_authorization`). Igual que en `IAgent`, una implementación puede
+aceptar kwargs opcionales además de `action` para evaluar el contenido
+concreto de la llamada.
 
 ### get_tool_name() → str
 Identificador único de la herramienta.
@@ -106,8 +113,8 @@ Ejemplo: `"file-system"`, `"email-sender"`, `"web-scraper"`
 2. Busca Tool correspondiente
 3. Obtiene metadata: get_metadata()
 4. Valida disponibilidad: is_available()
-5. Valida autorización: requires_authorization()
-6. Si requiere auth, pedir OK al usuario
+5. Valida autorización: requires_confirmation()
+6. Si requiere confirmación, pedir OK al usuario
 7. Ejecutar: execute(**kwargs)
 8. Retornar resultado
 9. Disparar evento TOOL_EXECUTED

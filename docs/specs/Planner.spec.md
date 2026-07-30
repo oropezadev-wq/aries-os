@@ -1,14 +1,23 @@
 # Planner — Spec
 
-> **BORRADOR — requiere aprobación.** Escrito en una sesión nocturna sin
+> **APROBADO (2026-07-25).** Escrito originalmente en una sesión nocturna sin
 > supervisión (2026-07-24) a partir de `docs/01_ARCHITECTURE.md`,
 > `docs/contracts/IAgent.md`, `docs/contracts/ITool.md` y el código real ya
 > implementado (`contracts/agent.py`, `contracts/tool.py`,
-> `llm/ollama_provider.py`, `core/kernel.py`, `events/`). **No se implementó
-> nada de código de Planner** — esto es solo la propuesta de diseño para
-> revisar mañana. Cada punto marcado **[REQUIERE DECISIÓN]** es una elección
-> de producto/arquitectura que este borrador señala pero no resuelve por su
-> cuenta.
+> `llm/ollama_provider.py`, `core/kernel.py`, `events/`). Los 9 puntos que
+> quedaron marcados `[REQUIERE DECISIÓN]` se resolvieron el 2026-07-25 (ver
+> cada decisión en su lugar, y el resumen en la sección 5) y ya están
+> implementados en `src/aries/planner/`, `src/aries/brain/` y el endpoint
+> `POST /message` de `src/aries/api.py`.
+>
+> **Corrección de un dato desactualizado:** este documento originalmente
+> decía "solo tres `IAgent` (`FileSystemAgent`, `ProcessAgent`, `GitAgent`)"
+> y "`agents/manager.py` está vacío". Ambas cosas cambiaron entre el 24 y el
+> 25 de julio: hoy existen **cuatro** `IAgent` concretos (se sumó
+> `DatabaseAgent`) y **`AgentManager` está implementado** (`agents/manager.py`,
+> registra los 4 agentes y expone `dispatch()`/`list_agents()`) — el "hueco
+> de implementación más grande" que la sección 2 señalaba ya no es tal; el
+> Planner implementado usa `AgentManager` real, no un registro propio.
 
 ## Contexto: por qué esto bloquea 14 de 15 eventos
 
@@ -48,11 +57,22 @@ async def handle(self, user_input: str, session_id: str | None = None) -> PlanEx
   contexto de conversación previo (`memory.search(query, memory_type="conversation")`
   o `memory.get_by_type("conversation")` filtrado por sesión). `IMemory` ya
   existe y funciona (`InMemoryStore`), pero **no tiene ningún campo de
-  sesión/conversación hoy** (`MemoryItem` no tiene `session_id`) —
-  **[REQUIERE DECISIÓN]** si se agrega ese campo a `MemoryItem` o si el
-  Planner arma el `session_id` como parte de `metadata` (ya es un
-  `dict[str, Any]` libre, así que técnicamente ya soportaría esto sin tocar
-  el contrato — solo hace falta decidir la convención).
+  sesión/conversación hoy** (`MemoryItem` no tiene `session_id`).
+
+  **DECISIÓN (2026-07-25):** `session_id` vive en `MemoryItem.metadata`
+  (el dict libre que ya existe), no en un campo nuevo de `MemoryItem`. Se
+  promueve a campo real recién cuando exista un backend persistente que
+  necesite indexar/filtrar por sesión eficientemente — hoy `InMemoryStore`
+  hace scan lineal, así que no hay ganancia en agregar la columna todavía.
+  El Planner implementado sigue esta misma convención para el `metadata` de
+  los eventos que publica (`session_id` va en `event.metadata`, no en un
+  campo dedicado de cada evento) — no hace falta dos convenciones distintas
+  para el mismo concepto. **Nota de alcance:** el Planner implementado en
+  esta tarea *acepta* `session_id` y lo propaga al `metadata` de sus
+  eventos, pero todavía no consulta `IMemory` para traer contexto de
+  conversación previo — eso es trabajo de una tarea futura, no de esta
+  (la tarea que la pidió fue específicamente "Planner + Brain + endpoint",
+  no "Planner + integración de Memory").
 
 No propongo qué recibe además de texto (imágenes, archivos adjuntos, etc.)
 porque no hay nada en `docs/01_ARCHITECTURE.md` ni en los contratos que lo
@@ -62,15 +82,21 @@ sugiera todavía — se agrega cuando haga falta, no antes.
 
 El único componente de IA generativa que existe hoy en el código es
 `ILLMProvider`/`OllamaProvider` (`complete()`, `embed()`, `is_available()`).
-Propuesta: el Planner usa `llm_provider.complete(prompt, ...)` con un prompt
-que le pide al modelo devolver una intención estructurada (JSON: acción +
-parámetros) en vez de texto libre — es el patrón estándar de "structured
-output via prompting" y no requiere ningún componente nuevo más allá de lo
-que ya existe. **[REQUIERE DECISIÓN]**: si esto se hace con prompting plano
-(pedirle JSON al modelo y parsearlo, frágil pero cero dependencias nuevas) o
-si se necesita algo más robusto (function calling si el proveedor lo
-soporta, grammar-constrained decoding, etc.) — `OllamaProvider` tal como
-está hoy no expone nada de eso, solo `complete()`/`embed()` genéricos.
+El Planner usa `llm_provider.complete(prompt, ...)` con un prompt que le
+pide al modelo devolver una intención estructurada (JSON: acción +
+parámetros) en vez de texto libre.
+
+**DECISIÓN (2026-07-25):** prompting plano (pedirle JSON al modelo y
+parsearlo), **validado con Pydantic** antes de confiar en él — no function
+calling ni grammar-constrained decoding (`OllamaProvider` no expone nada de
+eso hoy, y agregarlo sería una dependencia/diseño nuevo no pedido). Si el
+JSON no parsea o no valida contra el schema (`ParsedIntent`, en
+`planner/models.py`), se hace **un reintento** con un prompt de corrección
+que le muestra al modelo su respuesta inválida anterior. Si el segundo
+intento también falla, el Planner publica `ErrorOccurredEvent` y devuelve
+un fallo explícito (`PlanExecutionResult(success=False, error=...)`) — nunca
+ejecuta una acción a partir de un JSON que no pudo validar, y nunca deja
+propagar la excepción de parseo/validación hacia quien llamó a `handle()`.
 
 ---
 
@@ -83,52 +109,71 @@ está hoy no expone nada de eso, solo `complete()`/`embed()` genéricos.
 > tipada y schema-driven.
 
 Hoy **no existe ningún `ITool` concreto** (`PROGRESS.md`: "No hay ninguna
-clase concreta que implemente `ITool`"), solo tres `IAgent` (`FileSystemAgent`,
-`ProcessAgent`, `GitAgent`). Así que, en la práctica, cualquier regla de
-decisión Agent-vs-Tool es hoy un no-op (siempre gana Agent, porque no hay
-Tools con quien competir) — pero vale la pena dejar la regla escrita para
-cuando existan Tools, en vez de improvisarla ese día.
+clase concreta que implemente `ITool`"), y ahora hay **cuatro** `IAgent`
+(`FileSystemAgent`, `ProcessAgent`, `GitAgent`, `DatabaseAgent` — corregido,
+ver nota al inicio del documento) registrados en `AgentManager`, que **sí
+existe como código** (a diferencia de lo que decía la versión anterior de
+este borrador). Así que, en la práctica, la regla de decisión Agent-vs-Tool
+sigue siendo hoy un no-op (siempre gana Agent, porque no hay Tools con quien
+competir), pero queda escrita para cuando existan Tools.
 
-Propuesta de regla de decisión (para cuando ambos existan):
+Regla de decisión (para cuando existan Tools):
 
-1. El Planner mantiene (o consulta a) un registro de capacidades: para cada
-   `IAgent` registrado, `get_capabilities() -> list[str]`; para cada `ITool`
-   registrado, `get_actions() -> list[str]` (parte de `get_metadata()`).
-   **Ese registro no existe como código todavía** — `agents/manager.py` está
-   vacío (`PROGRESS.md`), y no hay ningún `ToolRegistry` equivalente. Este
-   es el hueco de implementación más grande para que el Planner pueda hacer
-   cualquier cosa, más allá de la lógica de decisión en sí.
-2. Si la acción que el LLM identificó coincide con `get_actions()` de algún
-   Tool registrado, preferir el Tool sobre cualquier Agent que también
-   ofrezca una acción con ese nombre. Motivo: un Tool es "más específico,
-   tipado y schema-driven" por definición del propio contrato — se asume
-   más seguro/predecible que un Agent genérico. **[REQUIERE DECISIÓN]**:
-   esto es una prioridad implícita que nadie escribió explícitamente en
-   ningún contrato — la estoy proponiendo acá, no citándola de otro lado.
+1. El Planner consulta `AgentManager.list_agents()` (ya implementado, real)
+   para saber qué agentes y acciones existen. **No existe ningún
+   `ToolRegistry` equivalente** — no se construyó uno en esta tarea porque
+   no hay ningún `ITool` concreto que registrar; el Planner implementado
+   solo resuelve acciones contra `AgentManager`. El punto de extensión para
+   cuando existan Tools es agregar la consulta a un futuro `ToolRegistry`
+   *antes* de la consulta a `AgentManager` en el mismo lugar del código
+   donde hoy se resuelve cada paso del plan — no hace falta rediseñar nada,
+   solo insertar el chequeo que sigue.
+2. **DECISIÓN (2026-07-25):** cuando la acción coincida con un Tool
+   registrado, el Tool tiene prioridad sobre cualquier Agent que ofrezca una
+   acción con el mismo nombre. Justificación: es literalmente lo que dice
+   `ITool.md` sobre la diferencia conceptual ("más específico, tipado y
+   schema-driven") — preferirlo es coherente con el propio contrato.
 3. Si no hay Tool que la cubra, buscar un Agent cuyo `get_capabilities()`
-   incluya la acción.
+   incluya la acción (esto es lo único que el Planner implementado hace hoy,
+   vía `AgentManager.get_agent()`/`dispatch()`).
 4. Si ninguno la cubre, el Planner no ejecuta nada — responde que la acción
-   no está soportada y publica `ErrorOccurredEvent` (ver catálogo de
-   eventos). No hay fallback silencioso.
-5. Antes de ejecutar, el Planner debe consultar `requires_confirmation(action, **kwargs)`
-   (Agent) o `requires_authorization(action)` (Tool) — **dos métodos con
-   nombre distinto para el mismo concepto**, ya señalado como inconsistencia
-   entre `IAgent.md` e `ITool.md`. El Planner tendría que normalizar esto
-   internamente (ej. un `_needs_confirmation(actor, action, **kwargs) -> bool`
-   propio que llame al método correcto según el tipo de `actor`).
-   **[REQUIERE DECISIÓN]**: si esta inconsistencia de nombres se corrige en
-   los contratos (unificar a un solo nombre de método) antes de escribir el
-   Planner, o si el Planner simplemente absorbe la diferencia.
+   no está soportada y publica `ErrorOccurredEvent`. No hay fallback
+   silencioso. **Implementado tal cual.**
+5. Antes de ejecutar, el Planner consulta si la acción requiere
+   confirmación.
+
+**DECISIÓN (2026-07-25) sobre el método:** se unifica a
+**`requires_confirmation`** en los dos contratos (`IAgent.md` e
+`ITool.md`) — se elimina `requires_authorization` de `ITool.md`/`contracts/tool.py`
+(ambos actualizados). Motivo: es un fix barato y aislado (no hay ningún
+`ITool` concreto que romper), y estandariza en el nombre que ya usan los 4
+agentes reales y que `IAgent.md` ya documenta con el patrón de extensión por
+kwargs opcionales. Evita construir una capa de traducción permanente en el
+Planner para lo que era solo un nombre distinto del mismo concepto. El
+Planner implementado llama `agent.requires_confirmation(action, **kwargs)`
+de forma defensiva (reintenta solo con `action` si el agente no acepta los
+kwargs extra) porque **no todos los agentes reales aceptan los mismos kwargs
+opcionales** (`FileSystemAgent.requires_confirmation` no tiene `**kwargs`
+catch-all, a diferencia de `ProcessAgent`/`GitAgent`/`DatabaseAgent`) — esto
+no es un bug de ningún agente (el contrato dice que aceptar kwargs extra es
+opcional, "puede aceptar"), así que no se tocó ningún agente; el Planner
+simplemente se adapta.
 
 ### Qué pasa si el usuario no confirma
 
 Ni `IAgent.md` ni `ITool.md` dicen cómo se le pide confirmación al usuario
-ni qué pasa si la niega — el flujo de `ITool.md` dice "Si requiere auth,
-pedir OK al usuario" sin más detalle. **[REQUIERE DECISIÓN]** completa: es
-un mecanismo de UI/interacción que no existe en ningún contrato todavía
-(¿el Planner bloquea y espera una respuesta? ¿publica un evento y otro
-componente maneja el prompt al usuario? ¿por dónde entra esa respuesta:
-otro `handle()`, un evento de vuelta?).
+ni qué pasa si la niega.
+
+**DECISIÓN (2026-07-25):** `Planner.handle(user_input, session_id=None,
+confirmed: bool = False)`. Si el paso actual del plan requiere confirmación
+y `confirmed` no es `True`, el Planner **no ejecuta ese paso ni ninguno
+posterior**, y devuelve `PlanExecutionResult(success=False,
+needs_confirmation=True, error="...")` explicando qué acción la requiere.
+Nada de loops de espera ni mecanismo de UI/prompt-al-usuario todavía — quien
+llame a `handle()` (hoy, el endpoint `POST /message`) es responsable de
+mostrarle la advertencia al usuario y volver a llamar a `handle()` con
+`confirmed=True` si el usuario acepta. Es deliberadamente el camino más
+simple: no presupone una arquitectura de UI/voz que todavía no existe.
 
 ---
 
@@ -160,19 +205,30 @@ catálogo de eventos"):
 
 Si algo revienta en cualquier paso (excepción no controlada, capacidad no
 encontrada), `publish(ErrorOccurredEvent(source, error, context))` y el plan
-se corta ahí — **[REQUIERE DECISIÓN]**: si se sigue ejecutando el resto de
-los pasos del plan tras un fallo parcial, o se aborta todo el plan. Ninguno
-de los contratos existentes lo dice.
+se corta ahí.
+
+**DECISIÓN (2026-07-25):** un plan **aborta completo en el primer fallo** de
+un paso — nada de ejecución best-effort de los pasos restantes. Motivo: la
+mayoría de los planes multi-paso tienen dependencias implícitas entre pasos
+(ej. "creá el archivo, después commiteálo" — commitear tras un `write_file`
+fallido no tiene sentido), así que seguir tras un fallo parcial es el
+default más peligroso. Un flag `on_error: "continue"` por paso queda como
+posible extensión futura si aparece un caso real que lo pida — no se
+construyó ahora sin ese caso concreto.
 
 ### Quién llama a `Planner.handle()`
 
 Hoy `Kernel.run()` es un stub (`await asyncio.sleep(0.1)`, `core/kernel.py`)
-— no invoca nada. Para que el Planner reciba texto de verdad, `Kernel.run()`
-(o algún loop nuevo) tiene que llamarlo. **[REQUIERE DECISIÓN]** completa,
-fuera del alcance de este borrador: cómo entra el input del usuario al
-sistema en primer lugar (¿un endpoint HTTP en `api.py`? ¿un loop de consola?
-¿la futura pipeline de voz?) — este documento asume que *algo* le da al
-Planner un `str`, no dice qué.
+— no invoca nada.
+
+**DECISIÓN (2026-07-25):** el "front door" es un **endpoint HTTP nuevo,
+`POST /message`, en `src/aries/api.py`** (FastAPI, que ya existe y ya tiene
+un endpoint real, `/health`) — no un loop de consola, no esperar a que Voice
+exista. Motivo: `api.py` ya es un servidor real y funcionando; agregar un
+endpoint es el camino más barato a un flujo end-to-end real y testeable hoy,
+y es la superficie que un futuro cliente de voz/UI terminaría llamando de
+todos modos. `Kernel.run()` sigue sin invocar a Planner — esta decisión
+deliberadamente no cablea Planner al Kernel, solo al endpoint HTTP.
 
 ### Nota sobre el Event Bus tal como está hoy
 
@@ -193,7 +249,7 @@ Acá hay una discrepancia real entre los dos contratos, verificada contra el
 código, no asumida:
 
 **`ActionResult`** (`contracts/agent.py`, lo que devuelve `IAgent.execute()`,
-ya implementado y usado por los tres agentes reales):
+ya implementado y usado por los cuatro agentes reales):
 ```python
 @dataclass
 class ActionResult:
@@ -223,21 +279,16 @@ Tools), el Planner recibe dos formas distintas de "resultado de un paso" y
 tiene que decidir qué le devuelve a quien llamó a `handle()`, y qué le pone
 en el payload de `PlanExecutedEvent.results`.
 
-**[REQUIERE DECISIÓN]**, con dos caminos obvios y ninguno decidido acá:
-
-- **(a) Normalizar:** el Planner convierte todo internamente a una sola
-  forma (¿`ActionResult`, ya que es la que más código real usa hoy?) antes
-  de reportar — Tool→Agent adapter, mapeando `success` → `status`,
-  `result` → `data`, sin `output` (o con `output=None`).
-- **(b) Unión discriminada:** el Planner reporta `list[ActionResult | ToolResult]`
-  tal cual, y quien consuma `PlanExecutedEvent`/la respuesta de `handle()`
-  tiene que manejar ambos tipos.
-
-Mi lectura (no vinculante, es una opinión de este borrador, no una
-decisión): (a) es más simple para todo lo que consuma el resultado del
-Planner después (Memory, la respuesta al usuario, un futuro Skill/Brain),
-pero pierde información si `ToolResult.result` tiene una forma muy distinta
-de lo que `ActionResult.data` esperaría. No lo resuelvo acá a propósito.
+**DECISIÓN (2026-07-25): (a) normalizar todo a `ActionResult`.** Con 4
+agentes reales ya construidos alrededor de `ActionResult` y cero Tools
+reales, el peso del código ya favorece esa forma. El adaptador Tool→ActionResult
+(mapeando `success`→`status`, `result`→`data`, sin `output`) viviría **dentro
+del Planner** cuando exista el primer Tool real — hoy no existe código de
+ese adaptador porque no hay ningún `ToolResult` real que adaptar todavía, y
+escribirlo sin un caso real para probarlo hubiera sido código muerto. La
+unión discriminada (b) se descarta: obligaría a todo consumidor futuro
+(Memory, la respuesta al usuario, `PlanExecutedEvent`) a bifurcar por tipo
+para siempre.
 
 ### Qué devuelve `handle()` en sí
 
@@ -252,30 +303,38 @@ class PlanExecutionResult:
 ```
 `response_text` es nuevo — no existe en ningún contrato citado. Alguien
 tiene que convertir "el plan corrió, estos fueron los resultados" en una
-respuesta en lenguaje natural para el usuario, y eso probablemente vuelve a
-pasar por `ILLMProvider.complete()` con otro prompt. **[REQUIERE DECISIÓN]**
-si eso lo hace el propio Planner o un componente separado (el "Brain" que
-menciona `docs/01_ARCHITECTURE.md` en el flujo, que tampoco existe como
-código todavía).
+respuesta en lenguaje natural para el usuario, y eso pasa por otra llamada a
+`ILLMProvider.complete()`.
+
+**DECISIÓN (2026-07-25):** `response_text` se genera en un módulo nuevo,
+**`src/aries/brain/`**, no dentro de `planner/` — una función mínima,
+`generate_response(llm_provider, user_input, plan_success, step_summaries)`,
+que arma un prompt con el resultado del plan y llama a
+`ILLMProvider.complete()`. El Planner importa y usa esa función; no tiene su
+propia lógica de fraseo. `brain/` **no hace nada más que esto por ahora** —
+sin lógica de tono/personalidad, sin memoria de conversación propia. Es la
+respuesta arquitectónicamente "correcta" según el diagrama de
+`01_ARCHITECTURE.md` (Planner -> Brain -> Skill -> Agent), pero se
+mantiene deliberadamente mínima: separar más responsabilidades de Brain
+antes de que exista una segunda razón real para hacerlo (otro consumidor, un
+concern genuinamente distinto) sería abstracción prematura.
 
 ---
 
-## 5. Resumen de todo lo marcado [REQUIERE DECISIÓN]
+## 5. Resumen de las 9 decisiones finales (2026-07-25)
 
-Para que mañana sea fácil de escanear sin releer todo el documento:
+1. `session_id` vive en `MemoryItem.metadata`/`event.metadata` (convención, no campo nuevo). Se promueve a campo real cuando exista backend persistente. Planner lo propaga en `metadata`, todavía no consulta `IMemory` (fuera de alcance de esta tarea).
+2. Intención estructurada: prompt plano + JSON, validado con Pydantic (`ParsedIntent`). Un reintento con prompt de corrección si falla; si vuelve a fallar, `ErrorOccurredEvent` y fallo explícito.
+3. Tool tiene prioridad sobre Agent cuando ambos cubren la misma acción — hoy es un no-op (0 Tools reales), el punto de extensión queda documentado en el código.
+4. Unificado a `requires_confirmation` en `IAgent.md` e `ITool.md` — `requires_authorization` eliminado de ambos.
+5. `Planner.handle(user_input, session_id=None, confirmed=False)` — si algo requiere confirmación y `confirmed` no es `True`, no ejecuta y devuelve `needs_confirmation=True`. Sin loops de espera ni UI.
+6. Un plan aborta completo en el primer fallo de un paso. Sin best-effort parcial.
+7. Front door: `POST /message` en `api.py` (FastAPI). No REPL, no Kernel, no esperar Voice.
+8. Todo se normaliza a `ActionResult`. El adaptador Tool→ActionResult vive en el Planner (código pendiente hasta que exista el primer Tool real).
+9. `response_text` se genera en `brain/` (módulo nuevo, mínimo), no dentro de Planner.
 
-1. Cómo se representa `session_id`/contexto de conversación en `IMemory` (¿campo nuevo en `MemoryItem`, o convención en `metadata`?).
-2. Prompting plano vs. algo más robusto para que el LLM devuelva una intención estructurada.
-3. Prioridad Tool-sobre-Agent cuando ambos cubren la misma acción — propuesta acá, no confirmada en ningún contrato.
-4. Unificar el nombre `requires_confirmation`/`requires_authorization` en los contratos, o que el Planner absorba la diferencia.
-5. Qué pasa si el usuario no confirma una acción destructiva — mecanismo de interacción completo, sin definir.
-6. Si un plan se aborta o sigue tras el fallo de un paso.
-7. Quién/qué le da al Planner el `user_input` en primer lugar (falta el "front door" del sistema).
-8. Normalizar `ActionResult`/`ToolResult` a una sola forma, o mantenerlos como unión.
-9. Quién arma `response_text` — ¿el propio Planner, o un componente "Brain" separado que tampoco existe?
-
-Ninguno de estos 9 puntos se decidió en este borrador a propósito — es
-trabajo para revisar mañana, no improvisado en una sesión sin supervisión.
+Las 9 están implementadas en `src/aries/planner/`, `src/aries/brain/` y
+`src/aries/api.py` (ver `PROGRESS.md` para el detalle de archivos y tests).
 
 ## Referencias
 - `docs/01_ARCHITECTURE.md`

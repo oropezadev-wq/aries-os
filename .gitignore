@@ -13,6 +13,14 @@ env/
 .coverage
 htmlcov/
 
+# Modelos de voz descargados por los tests de voice/ (whisper/piper/openwakeword)
+tests/.cache/
+
+# Backend persistente de Memory (SQLiteMemoryStore, settings.memory_db_path)
+# — dato real de runtime, no algo que se versione.
+*.db
+*.db-journal
+
 # Build
 build/
 dist/

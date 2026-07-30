@@ -10,6 +10,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from .agent import ActionResult
+
 
 @dataclass
 class PluginMetadata:
@@ -89,10 +91,31 @@ class IPlugin(ABC):
     def get_capabilities(self) -> list[str]:
         """Listar nuevas capacidades que agrega el plugin.
 
-        Estas capacidades se registran en el sistema.
+        Estas capacidades se registran en el sistema. Cada nombre es el
+        `action` válido para `execute()` — mismo criterio que
+        `IAgent.get_capabilities()`/`IAgent.execute()`.
 
         Returns:
             Lista de nombres de capacidades/acciones
+        """
+        ...
+
+    @abstractmethod
+    async def execute(self, action: str, **params: Any) -> ActionResult:
+        """Ejecutar una de las acciones declaradas en `get_capabilities()`.
+
+        Mismo contrato que `IAgent.execute()` (`docs/contracts/IAgent.md`):
+        nunca propaga excepciones. Cualquier error (acción desconocida,
+        parámetro inválido, falla del recurso subyacente) se captura dentro
+        de `execute()` y se retorna como `ActionResult(status=FAILED,
+        error=...)`.
+
+        Args:
+            action: Nombre de la acción, debe estar en `get_capabilities()`
+            **params: Parámetros específicos de la acción
+
+        Returns:
+            ActionResult con el resultado de la ejecución
         """
         ...
 

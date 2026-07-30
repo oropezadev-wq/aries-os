@@ -54,6 +54,28 @@ class AgentManager:
         self._agents[name] = agent
         self.logger.info("Agente registrado", agent_name=name)
 
+    def unregister(self, agent_name: str) -> bool:
+        """Remueve un agente registrado bajo `agent_name`.
+
+        Cambio mínimo agregado para que `PluginRegistry.unload()` pueda
+        deshacer el `register()` que hizo al cargar un plugin (vía
+        `PluginAgentAdapter`, ver `plugins/agent_adapter.py`) — los 4
+        `IAgent` nativos nunca se desregistran hoy (nada los carga/descarga
+        en runtime), pero un plugin sí puede descargarse en cualquier
+        momento (`docs/contracts/IPlugin.md`, principio de independencia),
+        y dejarlo registrado tras `unload()` sería despachar acciones hacia
+        una instancia ya apagada.
+
+        Returns:
+            `True` si había un agente con ese nombre y se removió, `False`
+            si no había nada registrado.
+        """
+        if agent_name not in self._agents:
+            return False
+        del self._agents[agent_name]
+        self.logger.info("Agente removido", agent_name=agent_name)
+        return True
+
     def get_agent(self, agent_name: str) -> IAgent | None:
         """Devuelve el agente registrado bajo `agent_name`, o `None`."""
         return self._agents.get(agent_name)

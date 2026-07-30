@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from aries.contracts.agent import ActionResult, ActionStatus
 from aries.contracts.plugin import IPlugin, PluginMetadata
 
 
@@ -39,16 +40,30 @@ class ExamplePlugin(IPlugin):
     def register_hooks(self) -> dict[str, Callable[..., Any]]:
         return {
             "KERNEL_READY": self._on_kernel_ready,
-            # "INTENT_DETECTED" todavía no existe como BaseEvent real (ver
-            # docs/audits/2026-07-24-diagnostico.md) — se declara a
+            # "MEMORY_SEARCHED" todavía no existe como BaseEvent real (ver
+            # plugins/registry.py::CONTRACT_EVENTS) — se declara a
             # propósito para que los tests confirmen que PluginRegistry lo
             # deja en `unavailable_hooks` en vez de fallar o mentir que
             # está conectado.
-            "INTENT_DETECTED": self._on_intent_detected,
+            "MEMORY_SEARCHED": self._on_memory_searched,
         }
 
     def get_capabilities(self) -> list[str]:
         return ["example_capability"]
+
+    async def execute(self, action: str, **params: Any) -> ActionResult:
+        """Capability real y funcional: `"example_capability"` hace un eco
+        del parámetro `text`, mayúsculas — suficiente para que un consumidor
+        (ej. `AgentManager.dispatch()`) pueda verificar un resultado
+        concreto, no solo que "no explotó"."""
+        if action != "example_capability":
+            return ActionResult(
+                status=ActionStatus.FAILED,
+                error=f"'{action}' no es una acción soportada por este plugin",
+            )
+
+        text = params.get("text", "")
+        return ActionResult(status=ActionStatus.SUCCESS, output=text.upper())
 
     def is_compatible(self, kernel_version: str) -> bool:
         return True
@@ -56,5 +71,5 @@ class ExamplePlugin(IPlugin):
     async def _on_kernel_ready(self, event: Any) -> None:
         self.received_events.append(event)
 
-    async def _on_intent_detected(self, event: Any) -> None:  # pragma: no cover
+    async def _on_memory_searched(self, event: Any) -> None:  # pragma: no cover
         self.received_events.append(event)

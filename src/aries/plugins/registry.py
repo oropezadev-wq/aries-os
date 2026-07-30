@@ -18,11 +18,23 @@ from typing import Any
 
 from structlog.stdlib import BoundLogger
 
+from ..agents.manager import AgentManager
 from ..contracts.event_bus import Handler, IEventBus
 from ..contracts.plugin import IPlugin, PluginMetadata
-from ..core.events import KernelInitializedEvent, KernelShutdownEvent
+from ..core.events import KernelInitializedEvent, KernelShutdownEvent, KernelStartingEvent
 from ..events.event import BaseEvent
 from ..logging import get_logger
+from ..planner.events import (
+    ActionCompletedEvent,
+    ActionFailedEvent,
+    ActionStartedEvent,
+    ErrorOccurredEvent,
+    IntentDetectedEvent,
+    MemoryStoredEvent,
+    PlanCreatedEvent,
+    PlanExecutedEvent,
+)
+from .agent_adapter import PluginAgentAdapter
 from .context import build_plugin_context
 from .events import PluginLoadedEvent, PluginUnloadedEvent
 from .installer import missing_requirements
@@ -31,28 +43,30 @@ from .manifest import ManifestError
 
 # Mapa contrato (docs/contracts/IPlugin.md, "Eventos disponibles") -> clase
 # real de BaseEvent. `None` = evento documentado en el contrato que
-# TODAVÍA NO EXISTE como clase concreta (ver
-# docs/audits/2026-07-24-diagnostico.md, "Propuesta catálogo de eventos" —
-# 13 de los 15 siguen bloqueados por Planner/Agent-Tool/Memory-EventBus).
-# Un plugin puede seguir declarando un hook para uno de estos nombres:
+# TODAVÍA NO EXISTE como clase concreta. Actualizado para reflejar el
+# catálogo real tras las tareas de Planner y Kernel (`core/events.py`,
+# `planner/events.py`) — quedan solo 2 de los 15 sin implementar:
+# `MEMORY_DELETED` y `MEMORY_SEARCHED` (bloqueados porque `IMemory.delete()`
+# y `IMemory.search()` no publican eventos todavía, ver PROGRESS.md).
+# Un plugin puede seguir declarando un hook para uno de estos dos nombres:
 # PluginRegistry no lo rechaza, pero jamás va a dispararse hasta que el
 # evento real exista — queda registrado en `LoadedPlugin.unavailable_hooks`
 # y se loguea una advertencia, en vez de fallar silenciosamente o mentir
 # que está "conectado".
 CONTRACT_EVENTS: dict[str, type[BaseEvent] | None] = {
-    "KERNEL_STARTING": None,
+    "KERNEL_STARTING": KernelStartingEvent,
     "KERNEL_READY": KernelInitializedEvent,  # equivalencia semántica, ver PROGRESS.md
     "KERNEL_SHUTDOWN": KernelShutdownEvent,
-    "INTENT_DETECTED": None,
-    "PLAN_CREATED": None,
-    "PLAN_EXECUTED": None,
-    "ACTION_STARTED": None,
-    "ACTION_COMPLETED": None,
-    "ACTION_FAILED": None,
-    "MEMORY_STORED": None,
+    "INTENT_DETECTED": IntentDetectedEvent,
+    "PLAN_CREATED": PlanCreatedEvent,
+    "PLAN_EXECUTED": PlanExecutedEvent,
+    "ACTION_STARTED": ActionStartedEvent,
+    "ACTION_COMPLETED": ActionCompletedEvent,
+    "ACTION_FAILED": ActionFailedEvent,
+    "MEMORY_STORED": MemoryStoredEvent,
     "MEMORY_DELETED": None,
     "MEMORY_SEARCHED": None,
-    "ERROR_OCCURRED": None,
+    "ERROR_OCCURRED": ErrorOccurredEvent,
     "PLUGIN_LOADED": PluginLoadedEvent,
     "PLUGIN_UNLOADED": PluginUnloadedEvent,
 }
@@ -73,9 +87,15 @@ class PluginRegistry:
     """Registro central de plugins: carga, inicializa, conecta hooks al
     Event Bus real, descarga."""
 
-    def __init__(self, event_bus: IEventBus, settings: Any = None) -> None:
+    def __init__(
+        self,
+        event_bus: IEventBus,
+        settings: Any = None,
+        agent_manager: AgentManager | None = None,
+    ) -> None:
         self._event_bus = event_bus
         self._settings = settings
+        self._agent_manager = agent_manager
         self._plugins: dict[str, LoadedPlugin] = {}
         self.logger: BoundLogger = get_logger(self.__class__.__name__)
 
@@ -172,12 +192,21 @@ class PluginRegistry:
             entry.connected_hooks[event_name] = handler
 
         self._plugins[metadata.name] = entry
+
+        if self._agent_manager is not None:
+            # Mismo camino que los 4 IAgent nativos: el plugin queda
+            # dispatchable vía AgentManager.dispatch() sin que AgentManager
+            # sepa que está hablando con un plugin (ver
+            # plugins/agent_adapter.py y docs/contracts/IPlugin.md).
+            self._agent_manager.register(PluginAgentAdapter(instance))
+
         self.logger.info(
             "Plugin cargado",
             plugin=metadata.name,
             version=metadata.version,
             hooks_conectados=list(entry.connected_hooks),
             hooks_no_disponibles=entry.unavailable_hooks,
+            registrado_en_agent_manager=self._agent_manager is not None,
         )
 
         await self._event_bus.publish(
@@ -206,6 +235,9 @@ class PluginRegistry:
             event_class = CONTRACT_EVENTS[event_name]
             assert event_class is not None  # invariante: solo se conectan hooks con clase real
             await self._event_bus.unsubscribe(event_class, handler)
+
+        if self._agent_manager is not None:
+            self._agent_manager.unregister(name)
 
         shutdown_ok = await self._safe_shutdown(entry.instance, name)
 

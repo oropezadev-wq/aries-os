@@ -85,6 +85,20 @@ class TestRegistration:
 
         assert set(manager.list_agents()) == {"solo"}
 
+    def test_unregister_removes_registered_agent(self, manager: AgentManager) -> None:
+        manager.register(FakeAgent("fake"))
+
+        removed = manager.unregister("fake")
+
+        assert removed is True
+        assert "fake" not in manager.list_agents()
+        assert manager.get_agent("fake") is None
+
+    def test_unregister_unknown_agent_returns_false(self, manager: AgentManager) -> None:
+        assert manager.unregister("no_existe") is False
+        # No debe afectar a los agentes ya registrados.
+        assert "filesystem" in manager.list_agents()
+
 
 class TestDispatchValidation:
     @pytest.mark.asyncio

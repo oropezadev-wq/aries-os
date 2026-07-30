@@ -63,7 +63,11 @@ class FileSystemAgent(IAgent):
             "write_file",
         ]
 
-    def requires_confirmation(self, action: str) -> bool:
+    def requires_confirmation(self, action: str, **_: Any) -> bool:
+        # `**_` acá solo por consistencia con los otros 3 IAgent reales
+        # (ProcessAgent/GitAgent/DatabaseAgent aceptan kwargs de extensión
+        # opcionales) — FileSystemAgent no necesita ninguno en particular,
+        # decide únicamente por el nombre de la acción.
         canonical = self._ALIASES.get(action, action)
         return canonical in self._DESTRUCTIVE_ACTIONS
 

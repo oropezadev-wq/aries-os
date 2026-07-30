@@ -5,7 +5,10 @@ from .event_bus import IEventBus
 from .llm import ILLMProvider, LLMResponse
 from .memory import IMemory, MemoryItem
 from .plugin import IPlugin, PluginHooks, PluginMetadata
+from .stt import ISTTProvider, STTResult
 from .tool import ITool, ToolMetadata, ToolResult
+from .tts import ITTSProvider, TTSResult
+from .wake_word import IWakeWordProvider, WakeWordDetection
 
 __all__ = [
     "ActionResult",
@@ -19,7 +22,13 @@ __all__ = [
     "IPlugin",
     "PluginHooks",
     "PluginMetadata",
+    "ISTTProvider",
+    "STTResult",
     "ITool",
     "ToolMetadata",
     "ToolResult",
+    "ITTSProvider",
+    "TTSResult",
+    "IWakeWordProvider",
+    "WakeWordDetection",
 ]

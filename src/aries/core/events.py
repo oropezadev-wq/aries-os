@@ -12,6 +12,12 @@ class KernelInitializedEvent(BaseEvent):
 
 
 @dataclass(frozen=True)
+class KernelStartingEvent(BaseEvent):
+    """Evento publicado cuando el kernel arranca su bucle principal (`run()`)."""
+    pass
+
+
+@dataclass(frozen=True)
 class KernelShutdownEvent(BaseEvent):
     """Evento publicado cuando el kernel se apaga correctamente."""
     pass

@@ -68,9 +68,11 @@ class TestContractEventsMap:
         }
         assert set(CONTRACT_EVENTS) == expected
 
-    def test_exactly_four_events_have_a_real_class_today(self) -> None:
-        implemented = [name for name, cls in CONTRACT_EVENTS.items() if cls is not None]
-        assert set(implemented) == {"KERNEL_READY", "KERNEL_SHUTDOWN", "PLUGIN_LOADED", "PLUGIN_UNLOADED"}
+    def test_thirteen_of_fifteen_events_have_a_real_class_now(self) -> None:
+        # Tras las tareas de Planner y Kernel, solo MEMORY_DELETED y
+        # MEMORY_SEARCHED siguen sin una clase BaseEvent real.
+        missing = [name for name, cls in CONTRACT_EVENTS.items() if cls is None]
+        assert set(missing) == {"MEMORY_DELETED", "MEMORY_SEARCHED"}
 
 
 class TestLoadRealPlugin:
@@ -108,7 +110,7 @@ class TestLoadRealPlugin:
 
         entry = registry.get_loaded_entry("example-plugin")
         assert "KERNEL_READY" in entry.connected_hooks
-        assert "INTENT_DETECTED" in entry.unavailable_hooks
+        assert "MEMORY_SEARCHED" in entry.unavailable_hooks
 
     @pytest.mark.asyncio
     async def test_load_publishes_plugin_loaded_event(
@@ -243,6 +245,7 @@ class TestLoadFailureModes:
             "    async def shutdown(self): return True\n"
             "    def register_hooks(self): return {}\n"
             "    def get_capabilities(self): return []\n"
+            "    async def execute(self, action, **params): ...\n"
             "    def is_compatible(self, kernel_version): return True\n"
         )
         _write_plugin(
@@ -271,6 +274,7 @@ class TestLoadFailureModes:
             "    async def shutdown(self): return True\n"
             "    def register_hooks(self): return {}\n"
             "    def get_capabilities(self): return []\n"
+            "    async def execute(self, action, **params): ...\n"
             "    def is_compatible(self, kernel_version): return True\n"
         )
         _write_plugin(tmp_path, _broken_plugin_manifest("init-falla"), code)
@@ -292,6 +296,7 @@ class TestLoadFailureModes:
             "    async def shutdown(self): return True\n"
             "    def register_hooks(self): return {}\n"
             "    def get_capabilities(self): return []\n"
+            "    async def execute(self, action, **params): ...\n"
             "    def is_compatible(self, kernel_version): return True\n"
         )
         _write_plugin(tmp_path, _broken_plugin_manifest("init-explota"), code)
@@ -316,6 +321,7 @@ class TestLoadFailureModes:
             "        return True\n"
             "    def register_hooks(self): raise RuntimeError('hooks rotos')\n"
             "    def get_capabilities(self): return []\n"
+            "    async def execute(self, action, **params): ...\n"
             "    def is_compatible(self, kernel_version): return True\n"
         )
         _write_plugin(tmp_path, _broken_plugin_manifest("hooks-rotos"), code)

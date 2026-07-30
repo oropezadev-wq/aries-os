@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
+from datetime import datetime, timedelta
+
 import pytest
 
+from aries.agents.manager import AgentManager
 from aries.config.settings import Settings
-from aries.core.events import KernelInitializedEvent, KernelShutdownEvent
+from aries.core.events import KernelInitializedEvent, KernelShutdownEvent, KernelStartingEvent
 from aries.core.kernel import Kernel
 from aries.events import BaseEvent
 from aries.memory.in_memory import InMemoryStore
@@ -51,7 +55,7 @@ class FakeEventBus(IEventBus):
 @pytest.mark.asyncio
 async def test_kernel_initialization() -> None:
     config = Settings()
-    kernel = Kernel(config, InMemoryStore(), FakeLLMProvider(), FakeEventBus())
+    kernel = Kernel(config, InMemoryStore(), FakeLLMProvider(), FakeEventBus(), AgentManager())
 
     await kernel.initialize()
 
@@ -61,7 +65,7 @@ async def test_kernel_initialization() -> None:
 @pytest.mark.asyncio
 async def test_kernel_already_initialized() -> None:
     config = Settings()
-    kernel = Kernel(config, InMemoryStore(), FakeLLMProvider(), FakeEventBus())
+    kernel = Kernel(config, InMemoryStore(), FakeLLMProvider(), FakeEventBus(), AgentManager())
 
     await kernel.initialize()
     await kernel.initialize()
@@ -73,7 +77,7 @@ async def test_kernel_already_initialized() -> None:
 async def test_kernel_shutdown() -> None:
     config = Settings()
     event_bus = FakeEventBus()
-    kernel = Kernel(config, InMemoryStore(), FakeLLMProvider(), event_bus)
+    kernel = Kernel(config, InMemoryStore(), FakeLLMProvider(), event_bus, AgentManager())
 
     await kernel.initialize()
     await kernel.shutdown()
@@ -86,7 +90,7 @@ async def test_kernel_init_with_unavailable_llm_provider() -> None:
     config = Settings()
     fake_provider = FakeLLMProvider(available=False)
     memory = InMemoryStore()
-    kernel = Kernel(config, memory, fake_provider, FakeEventBus())
+    kernel = Kernel(config, memory, fake_provider, FakeEventBus(), AgentManager())
 
     await kernel.initialize()
 
@@ -99,33 +103,99 @@ async def test_kernel_init_with_unavailable_llm_provider() -> None:
 async def test_kernel_publishes_initialized_event() -> None:
     config = Settings()
     event_bus = FakeEventBus()
-    kernel = Kernel(config, InMemoryStore(), FakeLLMProvider(), event_bus)
+    kernel = Kernel(config, InMemoryStore(), FakeLLMProvider(), event_bus, AgentManager())
 
     await kernel.initialize()
 
-    assert event_bus.published == [KernelInitializedEvent()]
+    # Comparación por tipo, no por igualdad completa del objeto: comparar
+    # instancias de `BaseEvent` con `==` incluye `timestamp`
+    # (`datetime.now(UTC)` generado en cada instancia), que casi nunca
+    # coincide al microsegundo entre la instancia real publicada y una
+    # nueva creada acá — ver PROGRESS.md, ya documentado como flaky de
+    # baseline en varias tareas anteriores. Mismo criterio ya usado en
+    # `test_kernel_run_publishes_starting_event` más abajo.
+    assert len(event_bus.published) == 1
+    assert isinstance(event_bus.published[0], KernelInitializedEvent)
 
 
 @pytest.mark.asyncio
 async def test_kernel_publishes_shutdown_event() -> None:
     config = Settings()
     event_bus = FakeEventBus()
-    kernel = Kernel(config, InMemoryStore(), FakeLLMProvider(), event_bus)
+    kernel = Kernel(config, InMemoryStore(), FakeLLMProvider(), event_bus, AgentManager())
 
     await kernel.initialize()
     await kernel.shutdown()
 
-    assert event_bus.published[-1] == KernelShutdownEvent()
+    # Comparación por tipo, no por igualdad completa — ver comentario en
+    # `test_kernel_publishes_initialized_event` arriba.
+    assert isinstance(event_bus.published[-1], KernelShutdownEvent)
 
 
 @pytest.mark.asyncio
 async def test_kernel_initialize_stores_context_memory_item() -> None:
     config = Settings()
     memory = InMemoryStore()
-    kernel = Kernel(config, memory, FakeLLMProvider(), FakeEventBus())
+    kernel = Kernel(config, memory, FakeLLMProvider(), FakeEventBus(), AgentManager())
 
     await kernel.initialize()
 
     context_items = await memory.get_by_type("context")
     assert len(context_items) == 1
     assert context_items[0].content == "Kernel inicializado"
+
+
+@pytest.mark.asyncio
+async def test_kernel_run_stops_cleanly_on_shutdown() -> None:
+    """Arranque y shutdown ordenado del Kernel real: `run()` corre en segundo
+    plano hasta que `shutdown()` lo señala, sin necesitar cancelación."""
+    config = Settings(kernel_housekeeping_interval_seconds=0.05)
+    kernel = Kernel(config, InMemoryStore(), FakeLLMProvider(), FakeEventBus(), AgentManager())
+
+    await kernel.initialize()
+    run_task = asyncio.create_task(kernel.run())
+    await asyncio.sleep(0.1)
+    assert kernel._running is True
+
+    await kernel.shutdown()
+    await asyncio.wait_for(run_task, timeout=1)
+
+    assert kernel._running is False
+    assert kernel._initialized is False
+
+
+@pytest.mark.asyncio
+async def test_kernel_run_publishes_starting_event() -> None:
+    config = Settings(kernel_housekeeping_interval_seconds=0.05)
+    event_bus = FakeEventBus()
+    kernel = Kernel(config, InMemoryStore(), FakeLLMProvider(), event_bus, AgentManager())
+
+    await kernel.initialize()
+    run_task = asyncio.create_task(kernel.run())
+    await asyncio.sleep(0.02)
+    await kernel.shutdown()
+    await asyncio.wait_for(run_task, timeout=1)
+
+    assert any(isinstance(event, KernelStartingEvent) for event in event_bus.published)
+    assert isinstance(event_bus.published[-1], KernelShutdownEvent)
+
+
+@pytest.mark.asyncio
+async def test_kernel_run_clears_expired_memory_periodically() -> None:
+    """Housekeeping real: un item vencido en la Memory real (no mock) debe
+    desaparecer solo, sin llamar a `clear_expired()` manualmente."""
+    config = Settings(kernel_housekeeping_interval_seconds=0.05)
+    memory = InMemoryStore()
+    kernel = Kernel(config, memory, FakeLLMProvider(), FakeEventBus(), AgentManager())
+
+    await kernel.initialize()
+    expired_item = await memory.store(
+        "dato viejo", "context", expires_at=datetime.now() - timedelta(seconds=1)
+    )
+
+    run_task = asyncio.create_task(kernel.run())
+    await asyncio.sleep(0.15)
+    await kernel.shutdown()
+    await asyncio.wait_for(run_task, timeout=1)
+
+    assert await memory.retrieve(expired_item.id) is None

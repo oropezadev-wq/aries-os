@@ -71,12 +71,42 @@ Registra manejadores de eventos.
 ### get_capabilities() → list[str]
 Lista acciones nuevas que el plugin proporciona.
 
-Estas se registran en el sistema y pueden ser usadas por el planner.
+Estas se registran en el sistema y pueden ser usadas por el planner. Cada
+nombre de esta lista es el `action` válido para invocar en `execute()` —
+mismo criterio que `IAgent.get_capabilities()`/`IAgent.execute()`: la lista
+de `get_capabilities()` es exactamente el conjunto de acciones que
+`execute()` sabe manejar, ni más ni menos.
 
 Ejemplo (Music Plugin):
 ```
 ["play", "pause", "next", "previous", "volume_up", "volume_down"]
 ```
+
+### async execute(action: str, **params) → ActionResult
+Ejecuta una de las acciones declaradas en `get_capabilities()`.
+
+**Mismo contrato que `IAgent.execute()`** (ver `docs/contracts/IAgent.md`):
+
+**Ejemplo:**
+```python
+# Music Plugin
+result = await plugin.execute("play", track_id="abc123")
+```
+
+**Retorna:** `ActionResult` con:
+- `status`: PENDING, RUNNING, SUCCESS, FAILED, CANCELLED
+- `output`: Resultado textual
+- `error`: Mensaje de error si falló
+- `data`: Datos estructurados (JSON-compatible)
+- `execution_time_ms`: Tiempo de ejecución
+
+**Nunca debe propagar excepciones.** Cualquier error durante la ejecución
+(acción desconocida, parámetro inválido, falla del recurso subyacente,
+etc.) se captura dentro de `execute()` y se retorna como
+`ActionResult(status=FAILED, error=<mensaje>)`; `execute()` nunca deja
+escapar una excepción sin capturar hacia quien lo llama — el mismo
+requisito que ya aplica a todo `IAgent.execute()` en este proyecto, ahora
+también para plugins.
 
 ### is_compatible(kernel_version) → bool
 Valida compatibilidad con la versión actual del kernel.

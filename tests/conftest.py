@@ -2,10 +2,30 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
+from pathlib import Path
+
+# `aries.api` construye `_memory = SQLiteMemoryStore(settings.memory_db_path)`
+# como singleton de módulo, a nivel de import (ver `src/aries/api.py`) — sin
+# esto, cualquier test que importe `aries.api` (directa o indirectamente)
+# crearía/reusaría un `aries_memory.db` real en la raíz del repo, con datos
+# que persistirían entre corridas de `pytest` (justo lo que el store está
+# diseñado para hacer). Se fuerza acá, ANTES de cualquier import que pueda
+# disparar la construcción de `aries.api`, un directorio temporal nuevo por
+# sesión de test (no reusado entre corridas, a diferencia de
+# `tests/.cache/` para modelos de voz) — el objetivo ahí es no pagar el
+# costo de re-descargar modelos, acá es exactamente lo contrario: no
+# arrastrar datos de una corrida de tests a la siguiente.
+os.environ.setdefault(
+    "MEMORY_DB_PATH", str(Path(tempfile.mkdtemp(prefix="aries-test-memory-")) / "memory.db")
+)
+
 from collections.abc import AsyncGenerator
 
 import pytest
 
+from aries.agents.manager import AgentManager
 from aries.config.settings import Settings
 from aries.core.kernel import Kernel
 from aries.events import AsyncEventBus
@@ -48,7 +68,7 @@ def fixture_llm_provider() -> ILLMProvider:
 @pytest.fixture(name="kernel")
 async def fixture_kernel(app_config: Settings, llm_provider: ILLMProvider) -> AsyncGenerator[Kernel, None]:
     """Inicializa un kernel para uso en pruebas asincrónicas."""
-    kernel = Kernel(app_config, InMemoryStore(), llm_provider, AsyncEventBus())
+    kernel = Kernel(app_config, InMemoryStore(), llm_provider, AsyncEventBus(), AgentManager())
     await kernel.initialize()
     yield kernel
     await kernel.shutdown()
