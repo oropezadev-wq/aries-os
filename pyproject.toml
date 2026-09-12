@@ -61,6 +61,18 @@ voice = [
     "faster-whisper>=0.10",
     "sounddevice>=0.5",
     "openwakeword>=0.6",
+    "scipy>=1.10",
+]
+
+# Entrenamiento de un modelo custom de wake word (openwakeword/train.py) —
+# extra separado de `voice` porque son dependencias pesadas de un solo uso
+# (no hacen falta para correr el pipeline en runtime, solo para entrenar el
+# .onnx una vez). Ver docs/specs/WakeWordTraining.spec.md.
+voice-training = [
+    "torch>=2.2",
+    "torchinfo>=1.8",
+    "torchmetrics>=1.3",
+    "pyyaml>=6.0",
 ]
 
 desktop = [
