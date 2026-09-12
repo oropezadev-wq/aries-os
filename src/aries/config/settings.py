@@ -52,6 +52,15 @@ class Settings(BaseSettings):
         "http://127.0.0.1:8000",
         description="URL base de la API (POST /message) que el pipeline de Voice consume como cliente HTTP — ver docs/specs/Voice.spec.md, decisión 2",
     )
+    voice_audio_device: str = Field(
+        "",
+        description="Dispositivo de entrada de audio a usar (índice numérico, nombre, o 'nombre, hostapi' tal como los "
+        "acepta sounddevice/PortAudio). Vacío = autodetección: MicrophoneListener prefiere el dispositivo de entrada "
+        "default de la hostapi WASAPI en vez del default 'crudo' del sistema, que en Windows suele resolver al backend "
+        "MME — ver PROGRESS.md, sección 'Validación de VoicePipeline con hardware real': MME devolvió audio casi "
+        "silencioso para un micrófono que funcionaba bien por WASAPI. Setear esta variable si la autodetección elige "
+        "el dispositivo equivocado.",
+    )
     memory_db_path: str = Field(
         "aries_memory.db",
         description="Ruta del archivo SQLite (relativa al directorio de trabajo, o absoluta) usado por SQLiteMemoryStore, el backend persistente de IMemory. Distinto de database_url (Postgres, sin uso todavía) — este es específicamente el store de Memory",

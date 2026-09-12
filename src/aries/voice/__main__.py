@@ -43,11 +43,15 @@ def _build_pipeline(settings: Settings) -> VoicePipeline:
     )
     config = VoicePipelineConfig(api_base_url=settings.voice_api_base_url)
 
+    audio_device: int | str | None = settings.voice_audio_device or None
+    if isinstance(audio_device, str) and audio_device.strip().lstrip("-").isdigit():
+        audio_device = int(audio_device.strip())
+
     return VoicePipeline(
         wake_word=wake_word,
         stt=stt,
         tts=tts,
-        listener=MicrophoneListener(),
+        listener=MicrophoneListener(device=audio_device),
         player=SpeakerPlayer(),
         config=config,
     )

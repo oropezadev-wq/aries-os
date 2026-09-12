@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import io
 import wave
+from math import gcd
 
 import numpy as np
 
@@ -27,6 +28,56 @@ SAMPLE_WIDTH = 2  # int16
 FRAME_SIZE = 1280  # 80ms @ 16kHz — tamaño de frame que espera openWakeWord
 
 logger = get_logger("voice.audio_io")
+
+
+def _prefer_wasapi_input_device(hostapis: list[dict]) -> int | None:
+    """Dado `sounddevice.query_hostapis()`, devuelve el índice del
+    dispositivo de entrada default de la hostapi WASAPI, si existe.
+
+    En Windows, el dispositivo de entrada "default" que PortAudio elige
+    sin más contexto suele resolver a la hostapi MME — que, para al menos
+    un micrófono probado con hardware real (Razer Seiren Mini), devolvía
+    audio casi silencioso (RMS ~0.5 constante, sin importar el volumen
+    real) mientras que el mismo dispositivo por WASAPI capturaba bien
+    (ver PROGRESS.md, sección "Validación de VoicePipeline con hardware
+    real"). No es un bug de esta librería, es un problema conocido del
+    backend MME con ciertos drivers/dispositivos — WASAPI es el backend
+    de audio moderno de Windows y no tiene ese problema, así que se
+    prefiere activamente en vez de confiar en el default "crudo".
+    En sistemas sin hostapi WASAPI (no-Windows) devuelve `None` y el
+    llamador cae al comportamiento default de PortAudio."""
+    for hostapi in hostapis:
+        if hostapi.get("name") == "Windows WASAPI":
+            index = hostapi.get("default_input_device", -1)
+            if index is not None and index >= 0:
+                return index
+    return None
+
+
+def _resample_frame(frame: np.ndarray, native_rate: int, target_rate: int, target_length: int) -> np.ndarray:
+    """Resamplea `frame` (int16) de `native_rate` a `target_rate`,
+    ajustando el resultado a exactamente `target_length` muestras.
+
+    Usa `scipy.signal.resample_poly` (filtro FIR polifásico con
+    anti-aliasing) en vez de decimación cruda — descartar muestras sin
+    filtrar introduciría aliasing, degradando la señal de la misma forma
+    que el problema que se está resolviendo (audio que "parece" tener
+    señal pero no sirve para el modelo de wake word). Se aplica por
+    frame de forma independiente (sin estado de filtro entre llamadas);
+    el orden del filtro es chico respecto al tamaño de frame (80ms), así
+    que el artefacto de borde en cada límite de frame es mínimo."""
+    from scipy.signal import resample_poly
+
+    divisor = gcd(native_rate, target_rate)
+    up, down = target_rate // divisor, native_rate // divisor
+    resampled = resample_poly(frame.astype(np.float64), up, down)
+
+    if len(resampled) > target_length:
+        resampled = resampled[:target_length]
+    elif len(resampled) < target_length:
+        resampled = np.pad(resampled, (0, target_length - len(resampled)))
+
+    return np.clip(resampled, -32768, 32767).astype(np.int16)
 
 
 def pcm_to_wav_bytes(
@@ -63,6 +114,14 @@ class MicrophoneListener:
     nivel de módulo) porque es una dependencia pesada opcional (extra
     `voice` de `pyproject.toml`) — el resto de `aries` no debe fallar al
     importarse si no está instalada.
+
+    `read_frame()` siempre devuelve `frame_size` muestras a `sample_rate`
+    (16kHz por default), sea cual sea el sample rate nativo del
+    dispositivo elegido — la captura real ocurre al rate nativo del
+    dispositivo (algunos backends de audio en Windows fuerzan un rate
+    fijo, típicamente 48kHz o 44.1kHz, e ignoran/degradan un pedido
+    explícito de 16kHz) y se resamplea a `sample_rate` en `read_frame()`.
+    Ver `_resample_frame` y `_prefer_wasapi_input_device`.
     """
 
     def __init__(
@@ -75,27 +134,42 @@ class MicrophoneListener:
         self.frame_size = frame_size
         self.device = device
         self._stream = None
+        self._native_rate = sample_rate
+        self._native_frame_size = frame_size
 
     def open(self) -> None:
         import sounddevice as sd
 
+        resolved_device = self.device
+        if resolved_device is None:
+            resolved_device = _prefer_wasapi_input_device(sd.query_hostapis())
+
+        device_info = sd.query_devices(resolved_device, "input")
+        self._native_rate = int(round(device_info["default_samplerate"]))
+        self._native_frame_size = max(1, round(self.frame_size * self._native_rate / self.sample_rate))
+
         self._stream = sd.InputStream(
-            samplerate=self.sample_rate,
+            samplerate=self._native_rate,
             channels=1,
             dtype="int16",
-            blocksize=self.frame_size,
-            device=self.device,
+            blocksize=self._native_frame_size,
+            device=resolved_device,
         )
         self._stream.start()
 
     def read_frame(self) -> np.ndarray:
-        """Lee (bloqueante) exactamente `frame_size` samples del micrófono."""
+        """Lee (bloqueante) el equivalente a `frame_size` muestras a
+        `sample_rate`, resampleadas desde el rate nativo de captura si
+        hace falta."""
         if self._stream is None:
             raise RuntimeError("MicrophoneListener no está abierto — llamar open() primero")
-        frame, overflowed = self._stream.read(self.frame_size)
+        frame, overflowed = self._stream.read(self._native_frame_size)
         if overflowed:
             logger.warning("Buffer de captura de audio desbordado (overflow)")
-        return frame.reshape(-1)
+        frame = frame.reshape(-1)
+        if self._native_rate != self.sample_rate:
+            frame = _resample_frame(frame, self._native_rate, self.sample_rate, self.frame_size)
+        return frame
 
     def close(self) -> None:
         if self._stream is not None:
