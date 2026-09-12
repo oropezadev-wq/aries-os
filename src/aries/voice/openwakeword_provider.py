@@ -41,6 +41,10 @@ class OpenWakeWordProvider(IWakeWordProvider):
         self._threshold = threshold
         self._wakeword_names = list(wakeword_models) if wakeword_models else [DEFAULT_WAKE_WORD_MODEL]
         self.logger = get_logger(self.__class__.__name__)
+        # TEMPORAL: expone el último dict de scores crudos (antes de
+        # filtrar por threshold) para diagnóstico externo — ver
+        # pipeline.py::_listen_for_activation_sync.
+        self._last_predictions: dict[str, float] = {}
 
         try:
             # `Model.__init__` muta en el lugar la lista `wakeword_models`
@@ -64,6 +68,11 @@ class OpenWakeWordProvider(IWakeWordProvider):
             predictions = self._model.predict(frame)
         except Exception as error:
             raise VoiceError(f"Error al procesar el frame de audio: {error}") from error
+
+        # TEMPORAL: guarda los scores crudos (sin filtrar por threshold)
+        # para que el loop de `pipeline.py` los pueda loguear siempre, no
+        # solo cuando disparan una detección.
+        self._last_predictions = {name: float(score) for name, score in predictions.items()}
 
         detections = [
             WakeWordDetection(name=name, score=float(score))
