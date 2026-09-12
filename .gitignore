@@ -21,6 +21,34 @@ tests/.cache/
 *.db
 *.db-journal
 
+# Config local (secrets/paths de la máquina) — nunca se versiona.
+.env
+
+# Basura de debug de validación manual de Voice con hardware real (no se
+# archiva, es descartable y se regenera con cada corrida).
+test_mic.wav
+voice_log.txt
+
+# Modelo de voz de Piper (~60MB+) — se descarga en runtime
+# (settings.voice_tts_model_path), no se versiona en el repo.
+es_MX-claude-high.onnx
+es_MX-claude-high.onnx.json
+
+# Entrenamiento de wake word custom (docs/specs/WakeWordTraining.spec.md):
+# grabaciones de voz reales del usuario, datasets de negativos descargados
+# (GBs), y artefactos intermedios de entrenamiento — nada de esto se
+# versiona (dato personal/pesado, regenerable). El script en sí
+# (record_samples.py) y el config de entrenamiento sí se versionan.
+tools/wake_word_training/dataset/
+tools/wake_word_training/negative_data/
+tools/wake_word_training/output/
+tools/wake_word_training/*.onnx
+tools/wake_word_training/*.tflite
+
+# Clon de piper-sample-generator (repo git ajeno, solo para satisfacer el
+# import incondicional de openwakeword/train.py — no es código propio).
+tools/wake_word_training/piper-sample-generator/
+
 # Build
 build/
 dist/
