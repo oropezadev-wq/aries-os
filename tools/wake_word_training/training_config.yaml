@@ -1,0 +1,76 @@
+# Config de entrenamiento para openwakeword/train.py — modelo "Hola Aries".
+#
+# BORRADOR NO VALIDADO — armado leyendo el código fuente de
+# `openwakeword/train.py` (instalado en `.venv-313`), no corrido todavía
+# de punta a punta (falta: dataset de negativos terminando de descargar,
+# extra `voice-training` instalándose, y las grabaciones reales del
+# usuario). Ver docs/specs/WakeWordTraining.spec.md.
+#
+# DELIBERADAMENTE no se usa `--generate_clips`: las muestras positivas son
+# grabaciones reales (tools/wake_word_training/record_samples.py), no TTS
+# sintético — ver Decisión 2 del spec. Esto también significa que no se
+# generan "negative clips adversariales" (frases parecidas sintetizadas
+# con Piper, un mecanismo opcional de hardening que también depende de
+# `piper_sample_generator_path` y por lo tanto del mismo problema de
+# inglés-only) — el negativo real viene 100% de `feature_data_files`
+# (features precomputadas de ACAV100M) más `background_paths` (para
+# augmentar las positivas con ruido/reverb).
+
+# Import incondicional en train.py (línea 638) aunque no se use
+# --generate_clips — ver nota técnica en el spec.
+piper_sample_generator_path: "./piper-sample-generator"
+
+model_name: "hola_aries"
+output_dir: "./output"
+
+target_phrase:
+  - "hola aries"
+
+# Directorios con archivos de audio reales (WAV) para RIR/ruido de fondo,
+# usados para augmentar las grabaciones positivas — NO son TTS, son
+# corpora de audio real independientes del idioma de la wake word.
+# TODO: descargar/apuntar antes de correr --augment_clips. openWakeWord
+# documenta descargas de MIT RIR Survey (RIR) y un subset de
+# audioset/FMA (ruido/música) en su propio notebook.
+rir_paths:
+  - "./negative_data/rir"
+background_paths:
+  - "./negative_data/background_noise"
+background_paths_duplication_rate: [1]
+
+# Features precomputadas de negativos (ACAV100M, ~2000hrs) descargadas de
+# davidscripka/openwakeword_features — bulk real del negativo, no
+# requiere TTS ni idioma. Ver tools/wake_word_training/negative_data/.
+feature_data_files:
+  ACAV100M: "./negative_data/openwakeword_features_ACAV100M_2000_hrs_16bit.npy"
+
+false_positive_validation_data_path: "./negative_data/validation_set_features.npy"
+
+# Augmentación (RIR + ruido) sobre las grabaciones reales ya existentes en
+# output/hola_aries/positive_train|test/ (pobladas a mano por
+# record_samples.py, no por --generate_clips).
+augmentation_rounds: 2
+augmentation_batch_size: 16
+
+# Arquitectura del clasificador — DNN chico, el mismo tipo que usan los
+# modelos pre-entrenados (hey_jarvis, etc).
+model_type: "dnn"
+layer_size: 32
+
+batch_n_per_class:
+  positive: 1000
+  adversarial_negative: 1000
+  ACAV100M: 1000
+
+steps: 10000
+max_negative_weight: 1500
+target_false_positives_per_hour: 0.5
+
+# No usados (sin --generate_clips), pero train.py los referencia si
+# alguna vez se decide agregar generación sintética adversarial más
+# adelante — se dejan en 0/vacío en vez de borrarlos del config, para que
+# quede explícito que la decisión fue "no generar", no "se olvidó".
+n_samples: 0
+n_samples_val: 0
+tts_batch_size: 1
+custom_negative_phrases: []
