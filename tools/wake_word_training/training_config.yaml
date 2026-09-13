@@ -46,9 +46,10 @@ feature_data_files:
 
 false_positive_validation_data_path: "./negative_data/validation_set_features.npy"
 
-# Augmentación (RIR + ruido) sobre las grabaciones reales ya existentes en
-# output/hola_aries/positive_train|test/ (pobladas a mano por
-# record_samples.py, no por --generate_clips).
+# Augmentación (RIR + ruido) sobre las grabaciones reales de
+# dataset/positive_train|test/ (armadas por record_samples.py). No usa
+# `output/<model_name>/positive_train|test` como haría train.py con
+# --generate_clips — run_training.py lee directo de dataset/.
 augmentation_rounds: 2
 augmentation_batch_size: 16
 
@@ -57,11 +58,18 @@ augmentation_batch_size: 16
 model_type: "dnn"
 layer_size: 32
 
+# Sin negativos adversariales sintéticos (ver nota arriba), así que no hay
+# key "adversarial_negative" acá — run_training.py arma feature_data_files
+# solo con "positive" + lo que esté en feature_data_files.
+# Valores chicos a propósito para la corrida de prueba con 27 positivas
+# reales — subir bastante (varios cientos) cuando haya ~100-120 grabaciones.
 batch_n_per_class:
-  positive: 1000
-  adversarial_negative: 1000
-  ACAV100M: 1000
+  positive: 8
+  ACAV100M: 64
 
+# steps=10000 es el valor real de producción — para una corrida de humo
+# rápida (validar que el pipeline no rompe, no un modelo usable) pasar
+# `--steps 200` a run_training.py en vez de editar esto.
 steps: 10000
 max_negative_weight: 1500
 target_false_positives_per_hour: 0.5
