@@ -30,6 +30,10 @@ dependencies = [
     "httpx>=0.27.0",
     "click>=8.1",
     "typer>=0.9",
+    # docs/specs/Routines.spec.md sección 1: parseo de cron + cálculo de
+    # próxima ejecución para RoutineManager — sin motor de scheduling
+    # propio (eso lo sigue manejando Kernel.run()).
+    "croniter>=2.0",
     # No es solo para el extra `voice`: `contracts/wake_word.py` importa
     # numpy a nivel de módulo, y `contracts/__init__.py` lo importa de
     # forma incondicional — cualquier `from aries.contracts.<lo que sea>
@@ -177,7 +181,7 @@ warn_no_return = true
 strict_optional = true
 
 [[tool.mypy.overrides]]
-module = ["pyside6.*", "faster_whisper.*", "piper.*", "sounddevice.*", "openwakeword.*"]
+module = ["pyside6.*", "faster_whisper.*", "piper.*", "sounddevice.*", "openwakeword.*", "croniter.*"]
 ignore_missing_imports = true
 
 [tool.isort]
