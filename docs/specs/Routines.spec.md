@@ -1,13 +1,19 @@
 # Routines (comportamiento proactivo) — Spec
 
-> **BORRADOR — requiere aprobación.** Escrito a partir del código real
-> existente (`core/kernel.py`, `contracts/event_bus.py`, `agents/manager.py`,
-> `voice/pipeline.py`, `contracts/tts.py`) y del mismo patrón de
-> `docs/specs/Voice.spec.md`/`docs/specs/Planner.spec.md` (contexto real
-> primero, decisiones numeradas después, puntos `[REQUIERE DECISIÓN]`
-> explícitos donde corresponde). **Cero código todavía** — instrucción
+> **BORRADOR — decisiones 1-3 y 4 (mecanismo) confirmadas por el usuario
+> el 2026-09-13; sección 4 detallada en un documento aparte.** Escrito a
+> partir del código real existente (`core/kernel.py`,
+> `contracts/event_bus.py`, `agents/manager.py`, `voice/pipeline.py`,
+> `contracts/tts.py`) y del mismo patrón de `docs/specs/Voice.spec.md`/
+> `docs/specs/Planner.spec.md`. **Cero código todavía** — instrucción
 > explícita: revisar el diseño antes de escribir una sola línea de
 > `routines/`.
+>
+> Criterio general dado por el usuario para este proyecto: priorizar
+> robustez/escalabilidad y evitar retrabajo futuro, aunque cueste más
+> esfuerzo ahora — condicionó las decisiones 1 y 4 (cron completo desde
+> el día uno en vez de un formato simple a migrar después; Redis Streams
+> con garantía de entrega en vez de pub/sub puro).
 
 ## Objetivo
 
@@ -51,29 +57,150 @@ reaccionar a la wake word. Ejemplos concretos que este diseño debe cubrir:
 
 ## 1. Alcance de v1 — qué tipo de "cuándo" se soporta
 
-**Recomendación: horario simple (hora del día + días de la semana) y
-"al arrancar el sistema" — no cron completo.**
+**`[CONFIRMADO]` Cron completo desde el día uno, vía `croniter`
+(parseo + cálculo de próxima ejecución) — no un formato simple a migrar
+después.** Motivo del usuario: evitar reescribir el esquema de rutinas
+el día que haga falta algo más que horario fijo (intervalos, días
+sueltos no recurrentes, múltiples horarios) — el costo de croniter desde
+ahora es bajo (una dependencia chica, sin motor de scheduling propio:
+`RoutineManager` sigue siendo quien decide cuándo chequear y qué hacer,
+`croniter` solo calcula "¿cuál es la próxima vez que esta expresión
+dispara?"). Se descarta `APScheduler` explícitamente — trae su propio
+motor de scheduling (threads/jobstores propios), que duplicaría el bucle
+que `Kernel.run()` ya tiene (sección 5); `croniter` es solo una función
+de cálculo, no un framework.
 
+**`on_startup` queda separado de cron, no dentro de la expresión** —
+cron (incluso con extensiones tipo `@reboot` de algunos dialectos) no
+tiene un concepto de "next fire time" calculable con `croniter` para
+"cuando arranca el sistema": es un disparo único al iniciar el Kernel,
+no algo recurrente en el tiempo.
+
+```python
+@dataclass(frozen=True)
+class RoutineDefinition:
+    id: str
+    action: RoutineAction
+    cron: str | None = None       # expresión cron de 5 campos, ej. "0 7 * * 1-5"
+    on_startup: bool = False      # dispara una vez al iniciar el Kernel
+    enabled: bool = True
+    # Exactamente uno de `cron`/`on_startup` debe estar seteado — se
+    # valida en loader.py, no en el dataclass (mismo criterio que
+    # `parse_manifest()` valida `PluginMetadata` después de construirla).
 ```
-trigger: "daily" | "on_startup"
-time_of_day: "07:00"        # solo si trigger == "daily"
-days_of_week: [0,1,2,3,4]   # opcional, default todos los días; 0=lunes
+
+**Atajos para no escribir cron a mano** (lo que el usuario pidió
+explícitamente): el **archivo** de una rutina (sección 3) puede declarar
+`schedule` de forma amigable en vez de `cron` directo — `loader.py`
+lo traduce a la expresión cron equivalente al cargar, antes de construir
+`RoutineDefinition`:
+
+```json
+{
+  "id": "buenos-dias",
+  "schedule": {"time": "07:00", "days_of_week": [0, 1, 2, 3, 4]},
+  "action": {"type": "speak", "text": "Buenos días"}
+}
 ```
 
-Motivo: es lo que cubre los tres ejemplos del objetivo sin agregar una
-dependencia nueva (`croniter`/`APScheduler`) para un caso de uso que hoy
-es "una vez por día a tal hora" — mismo criterio ya aplicado en el
-proyecto para no sumar herramientas sin necesidad real (ej. `ToolRegistry`
-comentado pero no implementado en `planner.py` hasta que exista un
-`ITool` real). Si en el futuro hace falta cron completo (ej. "cada 15
-minutos entre las 9 y las 18"), se agrega `croniter` como dependencia
-nueva en ese momento — el modelo de datos de la sección 3 deja lugar
-para un `trigger: "cron"` adicional sin romper los otros dos.
+`days_of_week` en el atajo usa **convención ISO/Python (0=lunes...6=domingo)**,
+no la convención de cron (0=domingo...6=sábado, con 7 también válido
+como domingo) — `loader.py` es responsable de traducir correctamente
+entre las dos (`cron_dow = (iso_dow + 1) % 7`), documentado ahí mismo con
+una tabla, para no dejarlo como una conversión implícita que alguien
+tiene que redescubrir leyendo el código. Un usuario avanzado puede
+saltear el atajo y escribir `"cron": "*/15 9-18 * * *"` directo en el
+archivo — ambos caminos terminan en el mismo campo `cron` de
+`RoutineDefinition`.
 
-**`[REQUIERE DECISIÓN]`** ¿Confirmás este alcance acotado para v1, o
-querés cron completo desde el arranque?
+### 1.1 Estado de reintento — explícito, no implícito en cómo se calcula `croniter.get_next()`
 
-## 2. ¿`RoutineManager` necesita un contrato (`IRoutineManager`)?
+**Esto quedó mal explicado en la primera vuelta de este documento** (la
+sección 3 de `MessageBus.spec.md` decía "el tick ya es un reintento
+natural" sin especificar qué ancla usa `croniter` para calcular la
+próxima ejecución) — si el ancla que le pasás a
+`croniter(cron, ancla).get_next()` se actualiza apenas la rutina se
+evalúa como "vencida" (sin importar si `publish()`/`dispatch()` tuvo
+éxito), el argumento es falso: la próxima ejecución calculada ya sería
+mañana a la misma hora, y un fallo a las 7:00 no se reintenta nunca en
+el mismo día — exactamente la falla silenciosa que este documento existe
+para evitar. Corregido acá con un estado explícito por rutina:
+
+```python
+@dataclass
+class RoutineRuntimeState:
+    """Estado mutable en memoria, por rutina — vive en RoutineManager,
+    separado de RoutineDefinition (inmutable, cargada de disco).
+    NO se persiste entre reinicios del proceso en v1 — ver nota al final."""
+
+    last_fired_occurrence: datetime | None = None
+    # La ocurrencia de cron que se ejecutó CON ÉXITO por última vez — el
+    # ancla real que usa croniter.get_next(). Se actualiza ÚNICAMENTE
+    # cuando la acción se confirma completada: AgentAction -> dispatch()
+    # volvió sin excepción; SpeakAction -> IMessageBus.publish() devolvió
+    # un id. NUNCA se actualiza solo por evaluar la rutina como vencida.
+
+    pending_occurrence: datetime | None = None
+    # Si no es None: hay una ocurrencia vencida que ya se intentó
+    # ejecutar y todavía no se confirmó con éxito. Mientras este campo
+    # no sea None, el tick reintenta ESA MISMA ocurrencia (no recalcula
+    # una nueva) — ver check_due() abajo.
+```
+
+```python
+def check_due(self, now: datetime) -> None:
+    for routine in self._routines.values():
+        if not routine.enabled:
+            continue
+        state = self._state[routine.id]  # una RoutineRuntimeState por rutina
+
+        if state.pending_occurrence is not None:
+            occurrence = state.pending_occurrence  # reintento: misma ocurrencia
+        else:
+            anchor = state.last_fired_occurrence or routine.loaded_at
+            occurrence = self._next_occurrence(routine, anchor)  # on_startup: una sola vez
+            if occurrence is None or occurrence > now:
+                continue  # todavía no le toca
+            state.pending_occurrence = occurrence
+
+        if (now - occurrence).total_seconds() > self.settings.routines_max_staleness_seconds:
+            self._publish_event(RoutineFailedEvent(routine_id=routine.id, error="stale, descartada"))
+            state.last_fired_occurrence = occurrence  # no reintentar algo ya declarado perdido
+            state.pending_occurrence = None
+            continue
+
+        if self._try_execute(routine):  # dispatch()/publish() sin excepción
+            state.last_fired_occurrence = occurrence
+            state.pending_occurrence = None
+        # si falla: pending_occurrence queda seteado -> el próximo tick
+        # (routines_check_interval_seconds) reintenta la MISMA ocurrencia
+```
+
+Con esto, "el tick es el reintento" es una afirmación verificable en el
+código, no una esperanza sobre cómo se calcula el próximo horario:
+mientras `pending_occurrence` no sea `None`, todos los ticks reintentan
+esa ocurrencia puntual hasta éxito o hasta
+`routines_max_staleness_seconds` — el cálculo de "cuándo es la próxima
+vez" ni se toca mientras haya un pendiente.
+
+**Límite conocido, declarado a propósito (no silencioso):**
+`RoutineRuntimeState` vive en memoria del proceso de la API, **no se
+persiste**. Si el `Kernel` se reinicia con una ocurrencia `pending`
+(ej. Redis estuvo caído, el reintento seguía en curso), ese estado se
+pierde — al volver a levantar, el ancla vuelve a ser `routine.loaded_at`
+(el momento del reinicio) y `croniter` calcula la próxima ejecución
+futura desde ahí, sin recordar que había algo pendiente de antes del
+reinicio. Robustece contra "Redis caído" y "VoicePipeline caído"
+(ambos sobreviven gracias a Streams + este estado de reintento); **no**
+robustece contra "el proceso de la API se reinicia mientras hay un
+pendiente" — ese caso puntual sigue siendo una pérdida silenciosa en v1.
+Si se vuelve un problema real, la mitigación es persistir
+`RoutineRuntimeState` (SQLite, mismo patrón que `SQLiteMemoryStore`) —
+no implementado ahora porque no hay evidencia de que el proceso de la
+API se reinicie con la frecuencia suficiente para que valga la pena
+hoy.
+
+## 2. ¿`RoutineManager` necesita un contrato (`IRoutineManager`)? `[CONFIRMADO]`
 
 **Recomendación: no.** Mismo razonamiento que ya se usó para no crear un
 contrato de captura de audio en `Voice.spec.md` ("forzarlo a un contrato
@@ -108,23 +235,16 @@ class ChainedAction:
 RoutineAction = SpeakAction | AgentAction | ChainedAction
 ```
 
-**`[REQUIERE DECISIÓN]`** ¿De acuerdo con no crear `IRoutineManager`, y
-con este modelo de `RoutineAction` como union de dataclasses (no ABC)?
+**`[CONFIRMADO]`** sin `IRoutineManager`; `RoutineAction` como union de
+dataclasses.
 
-## 3. Modelo de datos y dónde se definen las rutinas
+## 3. Modelo de datos y dónde se definen las rutinas `[CONFIRMADO]`
 
-```python
-@dataclass(frozen=True)
-class RoutineDefinition:
-    id: str                     # único, ej. "buenos-dias"
-    trigger: Literal["daily", "on_startup"]
-    action: RoutineAction
-    time_of_day: str | None = None      # "HH:MM", solo si trigger == "daily"
-    days_of_week: tuple[int, ...] | None = None  # None = todos los días
-    enabled: bool = True
-```
+`RoutineDefinition`/`RoutineAction` quedaron definidos en las secciones
+1 y 2 (cron + `on_startup`, acción tipada). Esta sección es sobre
+**dónde vive la definición**, no su forma.
 
-**Recomendación de carga: un directorio `routines_dir` con un archivo
+**Un directorio `routines_dir` con un archivo
 por rutina (JSON, mismo criterio que `manifest.json` de plugins — leer
 la definición de una rutina no debe requerir ejecutar código), cargado
 una vez al iniciar el Kernel** (`Kernel.initialize()`, junto a
@@ -134,17 +254,13 @@ una vez al iniciar el Kernel** (`Kernel.initialize()`, junto a
   No hay que aprender un patrón nuevo de persistencia para esto.
 - Las rutinas de v1 son pocas y las define una persona a mano, no un
   flujo de creación dinámica por UI/voz (eso queda fuera de alcance,
-  sección 6) — no hay necesidad real de un store con escritura en
+  sección 10) — no hay necesidad real de un store con escritura en
   caliente todavía.
 
-**`[REQUIERE DECISIÓN]`** ¿Archivo por rutina en `routines_dir` (nuevo
-campo en `Settings`, default algo como `"routines"`), o preferís que las
-rutinas vivan en `configs/development/settings.yaml` como una lista
-dentro del YAML que ya existe? Cualquiera de las dos es simple; la
-diferencia es si querés un directorio de archivos independientes
-(más fácil de versionar/editar de a uno) o una sola lista centralizada.
+**`[CONFIRMADO]`** archivo por rutina en `routines_dir` (nuevo campo en
+`Settings`, default `"routines"`).
 
-## 4. El problema difícil: ¿quién ejecuta la acción "hablar"?
+## 4. El problema difícil: ¿quién ejecuta la acción "hablar"? `[CONFIRMADO: Redis Streams]`
 
 Esta es la decisión de arquitectura central del documento — igual que la
 sección 5 de `Voice.spec.md` ("Cómo entra esto al Kernel/API"), se
@@ -158,69 +274,37 @@ inventar. **El problema es `SpeakAction`**: el TTS y el parlante viven
 cliente separado (decisión 2 de `Voice.spec.md`) — el proceso de la API
 no tiene ni puede tener acceso a hardware de audio por diseño.
 
-### Opción A — Nuevo endpoint HTTP que `VoicePipeline` consulta (recomendada)
+Se evaluaron tres caminos (endpoint HTTP con polling desde `VoicePipeline`;
+mover el scheduler entero adentro de `VoicePipeline`; transporte real
+entre procesos vía Redis). **Se descartó el polling HTTP**: además de la
+latencia de hasta N segundos, un `PUBLISH`/`SUBSCRIBE` o un polling
+simple no garantizan la entrega — si `VoicePipeline` está caído
+justo cuando la rutina se dispara, el aviso se pierde sin dejar rastro,
+algo inaceptable para un caso de uso literalmente llamado "despertame".
+**Se descartó mover el scheduler a `VoicePipeline`**: dejaría *todas*
+las rutinas (incluidas las que no hablan, como un backup) dependiendo de
+que el proceso de audio esté corriendo, acoplando dos responsabilidades
+que hoy están separadas a propósito.
 
-`RoutineManager` (en el proceso de la API) evalúa qué rutina está vencida
-y, si su acción incluye hablar, la deja en estado "pendiente de anunciar".
-Se agregan dos endpoints nuevos a `api.py`:
-- `GET /routines/due` — devuelve las rutinas con acción de voz vencidas
-  y no anunciadas todavía.
-- `POST /routines/{id}/ack` — `VoicePipeline` confirma que ya la habló.
+**`[CONFIRMADO]` Redis Streams, detrás de un contrato nuevo `IMessageBus`
+— diseño completo en `docs/specs/MessageBus.spec.md` +
+`docs/contracts/IMessageBus.md`, no repetido acá.** Resumen de una línea:
+`RoutineManager` publica en el topic `"routines.due"` cuando una
+`SpeakAction` está vencida; `VoicePipeline` la consume con garantía de
+entrega (si estaba caído, la lee al reconectar) y confirma con `ack()`
+una vez que terminó de hablar. `IMessageBus` es un contrato **separado**
+de `IEventBus` (confirmado explícitamente por el usuario, no una
+generalización de lo que ya existe) — ver `MessageBus.spec.md` sección 2
+para el porqué.
 
 `VoicePipeline.run_forever()` gana un **segundo loop concurrente**
 (`asyncio.create_task`, corriendo junto al loop de wake word ya
 existente — factible sin reescribir nada: `_listen_for_activation_sync`
 ya corre en un hilo aparte vía `asyncio.to_thread`, así que el loop del
-event loop principal queda libre para este segundo task) que hace poll a
-`GET /routines/due` cada N segundos, y si hay algo, lo sintetiza con su
-`ITTSProvider` y lo reproduce con su `SpeakerPlayer` — los mismos objetos
-que ya tiene, sin ningún componente nuevo del lado de voz — y confirma
-con el `ack`.
-
-**A favor:** mismo patrón ya establecido (`VoicePipeline` como cliente
-HTTP de la API, cero cambios en `Planner`/`Brain`/`Kernel` más allá de lo
-que ya se decide acá); no agrega infraestructura nueva (ni Redis, ni
-colas); `RoutineManager` sigue sin saber nada de audio.
-**En contra:** hay un delay de hasta N segundos entre "la rutina está
-vencida" y "se anuncia" (el intervalo de polling) — aceptable para
-"despertame a las 7am" (no hace falta al segundo), no para algo con
-requisito de latencia real.
-
-### Opción B — El scheduler corre dentro de `VoicePipeline`, no en la API
-
-Se importa la lógica de evaluación de horarios como librería dentro del
-proceso de `VoicePipeline` en vez de tener un `RoutineManager` separado
-en la API. Para `AgentAction`, `VoicePipeline` pegaría contra `POST
-/message` (ya existe) o necesitaría un endpoint de despacho directo
-nuevo igual.
-
-**A favor:** cero latencia de polling, un solo proceso evalúa todo.
-**En contra:** rompe la separación ya establecida ("Kernel/API corren
-headless, sin nada de audio de por medio" — acá el proceso de audio
-pasaría a ser dueño de la lógica de scheduling, que conceptualmente no
-tiene nada que ver con audio); si `VoicePipeline` no está corriendo (el
-usuario no lo tiene levantado), **ninguna** rutina se ejecuta, ni
-siquiera las que solo corren un agente sin hablar — perdés justo el caso
-"backup cada 30 minutos" que no necesita voz para nada.
-
-### Opción C — Transporte de eventos real entre procesos (Redis pub/sub)
-
-Usar el `redis_url` ya declarado (sin consumidor hoy) para que
-`RoutineManager` publique y `VoicePipeline` se suscriba en tiempo real.
-
-**A favor:** la opción "correcta" a largo plazo, cero polling, cero delay.
-**En contra:** primer consumidor real de Redis en todo el proyecto —
-dependencia de infraestructura nueva (hay que tener Redis corriendo) para
-resolver algo que hoy es "avisame una vez por día a una hora fija". Fuera
-de proporción para el alcance de v1 de la sección 1.
-
-**Recomendación: Opción A.** Motivo de una línea: reusa exactamente el
-patrón ya validado (`VoicePipeline` como cliente HTTP delgado), no
-condiciona "cualquier rutina" a que el proceso de audio esté corriendo, y
-no suma infraestructura nueva para un caso de uso que tolera algunos
-segundos de latencia.
-
-**`[REQUIERE DECISIÓN]`** ¿Opción A, o alguna de las otras dos?
+event loop principal queda libre para este segundo task) que consume
+`bus.subscribe("routines.due", group="voice-pipeline", consumer=...)`,
+sintetiza con su `ITTSProvider` y reproduce con su `SpeakerPlayer` — los
+mismos objetos que ya tiene — y hace `ack()` al terminar.
 
 ## 5. Dónde vive `RoutineManager` en el proceso de la API
 
@@ -231,7 +315,7 @@ del `while` de `Kernel.run()`, junto al `memory.clear_expired()` que ya
 está. Reusa `settings.kernel_housekeeping_interval_seconds` o un
 intervalo propio más fino (`routines_check_interval_seconds`, ej. 30s,
 para que "las 7:00" no se dispare recién a las 7:01 si el intervalo de
-housekeeping general es más largo) — a definir en la sección 3 del config.
+housekeeping general es más largo) — nuevo campo en `Settings`.
 
 `Kernel.initialize()` carga las rutinas desde `routines_dir` (igual que
 `_load_plugins()` carga plugins), guarda la lista en memoria.
@@ -290,10 +374,56 @@ mientras se reproduce el anuncio (mismo patrón que ya usa
 `_listen_for_activation_sync`, que no reabre el stream entre wake word y
 captura de la orden).
 
-## 9. Qué NO se hace en v1 (fuera de alcance, a propósito)
+## 9. Watchpoints anotados en la revisión (no bloquean, quedan registrados)
 
-- Cron completo (`trigger: "cron"` con expresión arbitraria) — ver
-  sección 1.
+Señalados en la revisión del diseño, con criterio explícito de "no hace
+falta resolverlos antes de implementar" — se documentan para no
+perderlos, no porque cambien el diseño de este documento.
+
+**9.1 — Downtime largo + rutina frecuente = muchas iteraciones de
+descarte.** Tal como está diseñado `check_due()` (sección 1.1), tras un
+downtime largo el ancla (`last_fired_occurrence` o `routine.loaded_at`)
+puede estar muy atrás en el tiempo — `croniter.get_next()` devuelve la
+ocurrencia **inmediatamente siguiente** al ancla, no la más reciente
+respecto a `now`. Con una rutina diaria eso es irrelevante (como mucho
+un par de ocurrencias viejas para descartar). Con una rutina horaria y
+una semana de downtime, son ~168 ocurrencias, una por tick, cada una
+evaluada como stale y descartada antes de alcanzar la ocurrencia real de
+hoy — no rompe nada, pero genera ~168 líneas de `RoutineFailedEvent` en
+el log a lo largo de varios minutos/horas según
+`routines_check_interval_seconds`. Mejora barata posible a futuro (no
+implementada ahora): si la ocurrencia calculada ya nace stale, saltar
+directo a `croniter.get_next(after=now)` y loguear una sola línea
+"se saltearon N ocurrencias vencidas" en vez de una por una.
+
+**9.2 — `_try_execute()` secuencial dentro del tick: verificado contra
+el código real, resultado mixto.** La preocupación (¿un `AgentAction`
+lento retrasa la evaluación de las demás rutinas del mismo tick, o peor,
+bloquea todo el proceso?) se chequeó contra los 4 `IAgent` nativos, no
+se asumió:
+
+| Agente | ¿Envuelve su I/O bloqueante en `asyncio.to_thread`? |
+|---|---|
+| `GitAgent` | Sí (`subprocess.run` vía `to_thread`) |
+| `ProcessAgent` | Sí (`subprocess.run`/`os.kill` vía `to_thread`) |
+| `DatabaseAgent` | Sí (`engine.begin()` vía `to_thread`) |
+| `FileSystemAgent` | **No** — `execute()` llama `Path.read_text()`/`write_text()` de forma síncrona, directo dentro del método `async def`, sin `to_thread` |
+
+Para `GitAgent`/`ProcessAgent`/`DatabaseAgent`, una `AgentAction` lenta
+en el tick de rutinas **no** bloquea el event loop — otras tareas
+concurrentes del proceso (otras rutinas del mismo tick, requests HTTP
+entrantes) siguen corriendo mientras esa espera está en curso. Para
+`FileSystemAgent`, un archivo grande o un filesystem lento **sí**
+bloquea el event loop completo mientras dura la operación — no es un
+problema nuevo de Routines (ya existe hoy para cualquier llamada vía
+`POST /message`), pero se vuelve alcanzable desde el tick de
+`Kernel.run()` además de desde HTTP. **No se corrige acá** — es un gap
+preexistente de `FileSystemAgent`, fuera de alcance de este documento;
+queda anotado como motivo real (no hipotético) para eventualmente
+alinearlo con el resto de los agentes.
+
+## 10. Qué NO se hace en v1 (fuera de alcance, a propósito)
+
 - Texto de `SpeakAction` generado dinámicamente vía LLM/Brain (ej. "dame
   un resumen de mis pendientes") — v1 es texto literal fijo en la
   definición de la rutina. Extensión futura real, no implementada ahora.
@@ -305,7 +435,7 @@ captura de la orden).
 - Reintentos automáticos si una rutina falla — se loguea
   `RoutineFailedEvent` y se sigue, sin política de retry en v1.
 
-## 10. Plan de archivos (para cuando se apruebe el diseño)
+## 11. Plan de archivos (para cuando se apruebe el diseño)
 
 - `src/aries/routines/models.py` — `RoutineDefinition`, `RoutineAction`
   (`SpeakAction`/`AgentAction`/`ChainedAction`).
@@ -314,28 +444,42 @@ captura de la orden).
   `list[RoutineDefinition]` (mismo criterio que `plugins/manifest.py`:
   nunca deja escapar `OSError`/`JSONDecodeError` crudos).
 - `src/aries/routines/manager.py` — `RoutineManager`: guarda las
-  definiciones cargadas, `check_due(now: datetime) -> list[RoutineDefinition]`,
-  `execute(routine) -> None` (publica `RoutineTriggeredEvent`, despacha
-  vía `AgentManager` y/o marca pendiente de voz según la sección 4,
-  publica `RoutineCompletedEvent`/`RoutineFailedEvent`).
-- `src/aries/core/kernel.py` — construye `self.routine_manager`, lo carga
-  en `initialize()`, lo chequea en cada tick de `run()` (sección 5).
+  definiciones cargadas, `check_due(now: datetime) -> list[RoutineDefinition]`
+  (vía `croniter`, sección 1), `execute(routine) -> None` (publica
+  `RoutineTriggeredEvent`, despacha `AgentAction` vía `AgentManager` y/o
+  publica `SpeakAction`s en `IMessageBus` — sección 4 —, publica
+  `RoutineCompletedEvent`/`RoutineFailedEvent`; aplica la política de
+  `routines_max_staleness_seconds` de `MessageBus.spec.md` sección 3).
+- `src/aries/routines/cron.py` — traduce el `schedule` amigable del
+  archivo de rutina (sección 1) a expresión cron; sin esto, `loader.py`
+  tendría que saber de cron directamente, mezclando parseo de archivo
+  con lógica de calendario.
+- `src/aries/core/kernel.py` — construye `self.routine_manager`
+  (recibe un `IMessageBus` ya construido, mismo patrón que recibe
+  `agent_manager`/`event_bus` — no lo construye él mismo), lo carga en
+  `initialize()`, lo chequea en cada tick de `run()` (sección 5).
 - `src/aries/config/settings.py` — campos nuevos: `routines_dir`,
-  `routines_check_interval_seconds`.
-- `src/aries/api.py` — `GET /routines/due`, `POST /routines/{id}/ack`
-  (solo si se confirma la Opción A de la sección 4).
+  `routines_check_interval_seconds`, `routines_max_staleness_seconds`.
 - `src/aries/voice/pipeline.py` — segundo loop concurrente en
-  `run_forever()` que hace poll a `GET /routines/due` (solo si Opción A).
-- `docs/contracts/` — **sin archivo nuevo**, dado que no hay contrato
-  ABC (sección 2) — si eso cambia, se documentaría acá con el mismo
-  formato que `IAgent.md`/`IPlugin.md`.
+  `run_forever()` que consume `IMessageBus.subscribe("routines.due", ...)`
+  (sección 4) — recibe un `IMessageBus` en el constructor de
+  `VoicePipeline`, mismo patrón que `wake_word`/`stt`/`tts`.
+- `docs/contracts/` — sin archivo nuevo para `RoutineManager` (sección 2,
+  no tiene contrato ABC); **sí** `docs/contracts/IMessageBus.md`, ya
+  escrito — ver `docs/specs/MessageBus.spec.md`.
+- Ver `docs/specs/MessageBus.spec.md` sección 6 para el plan de archivos
+  del lado del bus (`contracts/message_bus.py`, `messaging/redis_streams_bus.py`).
+- `pyproject.toml` — dependencias nuevas: `croniter` (sección 1) y
+  `redis` (ver `MessageBus.spec.md`).
 
 ## Referencias
 - `docs/specs/Voice.spec.md` (decisión 2: por qué `VoicePipeline` es un
-  proceso separado sin acceso desde la API; patrón de cliente HTTP a
-  reusar en la sección 4, Opción A)
+  proceso separado sin acceso desde la API)
 - `docs/specs/Planner.spec.md` (por qué `Planner` no tiene contrato propio
   — mismo razonamiento aplicado acá a `RoutineManager`)
+- `docs/specs/MessageBus.spec.md` + `docs/contracts/IMessageBus.md`
+  (diseño completo de la sección 4 — Redis Streams, política de Redis
+  caído, retención del stream)
 - `src/aries/core/kernel.py` (bucle de `run()` a extender, sección 5)
 - `src/aries/agents/manager.py` (`AgentManager.dispatch()`, reusado tal
   cual para `AgentAction`)
