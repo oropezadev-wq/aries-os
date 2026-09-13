@@ -62,6 +62,24 @@ voice = [
     "sounddevice>=0.5",
     "openwakeword>=0.6",
     "scipy>=1.10",
+    # onnxruntime no está declarada por ninguna de las de arriba con techo
+    # de versión (openwakeword/faster-whisper/piper-tts piden solo un
+    # mínimo) — sin esto, pip resuelve siempre la última disponible.
+    # onnxruntime==1.28.0 está CONFIRMADO roto para wake word en Windows:
+    # openWakeWord (melspectrogram.onnx + embedding_model.onnx, sin
+    # cambios) da scores pegados en ~0.000001 sin importar volumen/
+    # contenido del audio (ver PROGRESS.md, "Validación de VoicePipeline
+    # con hardware real"; síntoma idéntico — no confirmado como la misma
+    # causa raíz — reportado también en macOS ARM64:
+    # https://github.com/dscripka/openWakeWord/issues/336, sin resolver
+    # ahí tampoco). El fix original fue onnxruntime==1.17.3, pero esa
+    # versión no tiene wheel para Python 3.13 (arranca en 1.20.0) — el
+    # rango de abajo excluye la 1.28.0 confirmada mala; **no** confirma
+    # que 1.20-1.27 estén bien, solo que 1.20.0 es la más cercana
+    # disponible a la última versión conocida como buena. Sigue
+    # pendiente validar con hardware real cuál del rango funciona de
+    # verdad — ver docs/specs/WakeWordTraining.spec.md.
+    "onnxruntime>=1.20,<1.28",
 ]
 
 # Entrenamiento de un modelo custom de wake word (openwakeword/train.py) —
