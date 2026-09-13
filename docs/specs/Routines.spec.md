@@ -304,7 +304,13 @@ ya corre en un hilo aparte vía `asyncio.to_thread`, así que el loop del
 event loop principal queda libre para este segundo task) que consume
 `bus.subscribe("routines.due", group="voice-pipeline", consumer=...)`,
 sintetiza con su `ITTSProvider` y reproduce con su `SpeakerPlayer` — los
-mismos objetos que ya tiene — y hace `ack()` al terminar.
+mismos objetos que ya tiene — y hace `ack()` al terminar. **El
+comportamiento exacto de este loop (cuándo se descarta un mensaje por
+vencido, cuándo se hace `ack()`, cómo se crea el consumer group, nombre
+de consumidor) está especificado en `docs/specs/MessageBus.spec.md`
+sección 6, no repetido acá** — encontrado en revisión que dejarlo
+implícito reabría, del lado del consumidor, la misma falla silenciosa
+que este documento existe para evitar del lado del publisher.
 
 ## 5. Dónde vive `RoutineManager` en el proceso de la API
 
@@ -467,7 +473,7 @@ alinearlo con el resto de los agentes.
 - `docs/contracts/` — sin archivo nuevo para `RoutineManager` (sección 2,
   no tiene contrato ABC); **sí** `docs/contracts/IMessageBus.md`, ya
   escrito — ver `docs/specs/MessageBus.spec.md`.
-- Ver `docs/specs/MessageBus.spec.md` sección 6 para el plan de archivos
+- Ver `docs/specs/MessageBus.spec.md` sección 7 para el plan de archivos
   del lado del bus (`contracts/message_bus.py`, `messaging/redis_streams_bus.py`).
 - `pyproject.toml` — dependencias nuevas: `croniter` (sección 1) y
   `redis` (ver `MessageBus.spec.md`).
