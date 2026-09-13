@@ -28,6 +28,8 @@ tests/.cache/
 # archiva, es descartable y se regenera con cada corrida).
 test_mic.wav
 voice_log.txt
+debug_raw_capture.wav
+debug_resampled_capture.wav
 
 # Modelo de voz de Piper (~60MB+) — se descarga en runtime
 # (settings.voice_tts_model_path), no se versiona en el repo.

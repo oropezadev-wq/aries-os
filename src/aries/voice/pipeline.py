@@ -17,7 +17,6 @@ from typing import Any, Optional
 from uuid import uuid4
 
 import httpx
-import numpy as np  # TEMPORAL: solo para el log de diagnóstico de audio, ver _listen_for_activation_sync
 
 from ..exceptions import VoiceError
 from ..logging import get_logger
@@ -104,26 +103,10 @@ class VoicePipeline:
         MISMO stream ya abierto (sin reabrir) para no perder los primeros
         frames de la orden justo después de la wake word."""
         with self.listener:
-            # TEMPORAL: diagnóstico de captura de audio, remover después de
-            # confirmar si el problema es "no llega audio del micrófono" o
-            # "llega audio pero la wake word nunca dispara".
             self.logger.info("escuchando...")
             while True:
                 frame = self.listener.read_frame()
-                nivel = float(np.sqrt(np.mean(frame.astype(np.float64) ** 2)))
-                self.logger.info(f"audio detectado, nivel: {nivel:.1f}")
                 detections = self.wake_word.process_frame(frame)
-                # TEMPORAL: score crudo de "hey_jarvis" en cada predicción,
-                # no solo cuando supera el threshold — para diagnosticar si
-                # el problema es "nunca se acerca al threshold" (captura o
-                # modelo mal configurados) vs. "se acerca pero no cruza"
-                # (threshold mal calibrado). Lee un atributo TEMPORAL de
-                # `OpenWakeWordProvider` (`_last_predictions`), no forma
-                # parte del contrato `IWakeWordProvider`.
-                score = getattr(self.wake_word, "_last_predictions", {}).get("hey_jarvis")
-                threshold = getattr(self.wake_word, "_threshold", None)
-                if score is not None and threshold is not None:
-                    self.logger.info(f"wake word score: {score:.6f} (threshold: {threshold:.2f})")
                 if detections:
                     break
             return record_until_silence(
