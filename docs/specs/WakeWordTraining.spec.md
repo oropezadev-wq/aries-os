@@ -9,6 +9,18 @@
 > capturado correctamente (RMS sano, sin bug de resampling ni de timing) —
 > descartado como problema de pronunciación en inglés (sonidos como la "j"
 > de "Jarvis") que no matchea el training data del modelo pre-entrenado.
+>
+> **Corrección posterior (2026-09-13):** la investigación siguió después de
+> escribir este documento y encontró la causa raíz real del score-cero:
+> mejoras de audio de Windows ("Foco de voz"/"Voice Clarity" en las
+> propiedades del micrófono) aplicaban un filtro de banda angosta que
+> aplastaba el espectro por encima de ~300Hz — no pronunciación. Ver
+> `PROGRESS.md`, sección "Validación de VoicePipeline con hardware real",
+> resolución final, para la cadena completa de hipótesis descartadas. **La
+> decisión de entrenar "Hola Aries" en español sigue siendo válida por
+> motivos de UX (una wake word propia en español en vez de "hey jarvis"
+> en inglés), pero ya no es la solución a este bug puntual** — queda como
+> mejora de producto a evaluar, no como fix urgente.
 
 ## Decisión 1: frase — "Hola Aries"
 

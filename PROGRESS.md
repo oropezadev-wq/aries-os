@@ -63,7 +63,7 @@ Las dos sesiones nocturnas del 2026-07-24 (GitAgent+investigación de commits / 
 
 ---
 
-## Validación de VoicePipeline con hardware real (2026-08-24) — EN CURSO
+## Validación de VoicePipeline con hardware real (2026-08-24) — RESUELTO (2026-09-13)
 
 Se probó el pipeline completo (wake word → STT → POST /message → TTS) con
 micrófono y parlante reales por primera vez. Estado: 3 de 4 componentes
@@ -142,7 +142,7 @@ ese valor, en teoría cualquier score >0.05 debería disparar — pero
 ninguna de las últimas tomas superó 0.03, así que ni con ese threshold
 bajo se logró un `Wake word detectada` real en esta sesión.
 
-### Siguiente paso sugerido
+### Siguiente paso sugerido (histórico, ver resolución abajo)
 No se ha confirmado un ciclo completo end-to-end exitoso (wake word →
 STT → API → TTS → parlante) con hardware real todavía. Antes de seguir
 bajando el threshold indefinidamente, valdría la pena: (a) diagnosticar
@@ -150,3 +150,64 @@ offline con clips `.wav` grabados sin la complejidad de jobs de
 PowerShell/streaming en vivo, o (b) evaluar entrenar un modelo de wake
 word propio con muestras de la voz real del usuario (openwakeword
 soporta esto, ver `docs/custom_verifier_models.md` de la librería).
+
+### Resolución final (2026-09-13): causa raíz real era una mejora de audio de Windows, no código
+
+Tras esta sesión se investigaron y descartaron, en orden, varias hipótesis
+con evidencia real antes de llegar a la causa raíz — se deja el registro
+completo porque cada descarte fue un hallazgo real, no un callejón sin
+salida vacío:
+
+1. **Backend MME de captura** (real, corregido y en producción): `_prefer_wasapi_input_device` +
+   resampling desde el sample rate nativo del dispositivo en
+   `audio_io.py`/`MicrophoneListener` — el mic capturaba casi silencio
+   por MME, WASAPI lo resuelve. Sigue siendo necesario, no era la causa
+   del problema de score bajo.
+2. **`onnxruntime==1.28.0`** — descartado. Confirmado que había vuelto a
+   resolverse a esa versión durante las instalaciones de la sesión de
+   entrenamiento custom (nunca estuvo fijada en `pyproject.toml`); se
+   fijó `onnxruntime>=1.20,<1.28` y se dejó `1.20.0` instalada. El score
+   siguió bajo incluso con la versión "sana" confirmada activa — no era
+   la causa.
+3. **Artefacto de resampling frame-a-frame** (clicks en cada borde de
+   80ms) — descartado con una prueba causal real: "declickear" los
+   bordes no cambió el score de forma significativa (0.000445 vs 0.0004).
+4. **Filtro de banda angosta en la captura misma** (no en el resampling)
+   — confirmado con análisis espectral comparando un dump del audio
+   crudo (rate nativo, antes de `_resample_frame`) contra el ya
+   resampleado: ambos daban prácticamente los mismos porcentajes por
+   banda (~76% de la energía en 0-300Hz en los dos), descartando que el
+   resampling fuera la causa y apuntando a algo anterior en la cadena de
+   captura.
+5. **Pronunciación en inglés** — hipótesis que se sostuvo como líder
+   durante gran parte de la sesión (y motivó todo el trabajo de
+   `docs/specs/WakeWordTraining.spec.md`, wake word custom en español)
+   — **descartada como causa de este bug puntual** por el hallazgo final.
+
+**Causa raíz real, confirmada por el usuario:** las mejoras de audio de
+Windows ("Voice Clarity"/"Foco de voz", Panel de Sonido → Grabación →
+Razer → Propiedades → Mejoras de audio) aplicaban un filtro agresivo de
+reducción de ruido que aplastaba todo el espectro por encima de ~300Hz —
+exactamente el patrón que mostró el análisis espectral del punto 4, con
+la causa un paso más atrás de lo que ese análisis podía ver (la mejora
+se aplica en el motor de audio compartido de Windows, antes de que
+`sounddevice`/PortAudio reciban una sola muestra — ningún cambio de
+código podía haberlo arreglado). **Al desactivar esas mejoras, `hey_jarvis`
+disparó por primera vez de verdad** (`score=0.0563`, cruzó el threshold
+de `0.05`).
+
+**Conclusión práctica:** el fix real es de configuración de Windows, no
+de código — no hay nada que "arreglar" en `audio_io.py` para este bug
+específico (el fix de WASAPI del punto 1 sigue siendo válido y necesario
+por su propia razón, solo que no era la causa de *este* problema). Los 3
+dumps TEMPORAL de diagnóstico (audio crudo, audio resampleado, logging
+de score por frame) y el toggle `VOICE_DEBUG_WASAPI_EXCLUSIVE` se
+removieron de `audio_io.py`/`pipeline.py`/`openwakeword_provider.py` una
+vez cerrado el diagnóstico.
+
+**Pendiente real para la próxima sesión:** decidir si seguir invirtiendo
+en el wake word custom en español (`docs/specs/WakeWordTraining.spec.md`)
+ahora que la causa de este bug puntual no era pronunciación — la razón
+original para migrar a un modelo propio (UX: una frase en español en vez
+de "hey jarvis" en inglés) sigue siendo válida por su cuenta, pero ya no
+es "la solución a un bug", es una mejora de producto a evaluar aparte.
