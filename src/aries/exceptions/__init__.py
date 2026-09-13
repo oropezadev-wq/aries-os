@@ -33,6 +33,11 @@ class VoiceError(AriesException):
     """Error en el subsistema de voz."""
 
 
+class MessageBusError(AriesException):
+    """Error de `IMessageBus` — el bus no está disponible (ej. Redis
+    caído/no alcanzable). Ver `docs/contracts/IMessageBus.md`."""
+
+
 __all__ = [
     "AriesException",
     "ConfigError",
@@ -42,4 +47,5 @@ __all__ = [
     "AgentError",
     "LLMError",
     "VoiceError",
+    "MessageBusError",
 ]

@@ -4,6 +4,7 @@ from .agent import ActionResult, ActionStatus, IAgent
 from .event_bus import IEventBus
 from .llm import ILLMProvider, LLMResponse
 from .memory import IMemory, MemoryItem
+from .message_bus import BusMessage, IMessageBus
 from .plugin import IPlugin, PluginHooks, PluginMetadata
 from .stt import ISTTProvider, STTResult
 from .tool import ITool, ToolMetadata, ToolResult
@@ -19,6 +20,8 @@ __all__ = [
     "LLMResponse",
     "IMemory",
     "MemoryItem",
+    "BusMessage",
+    "IMessageBus",
     "IPlugin",
     "PluginHooks",
     "PluginMetadata",
