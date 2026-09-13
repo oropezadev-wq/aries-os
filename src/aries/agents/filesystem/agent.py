@@ -7,6 +7,7 @@ corresponde a ProcessAgent/WindowsAgent (ver docs/contracts/IAgent.md).
 
 from __future__ import annotations
 
+import asyncio
 import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -127,7 +128,7 @@ class FileSystemAgent(IAgent):
 
     async def _read_file(self, path: str, **_: Any) -> _HandlerResult:
         file_path = Path(path)
-        content = file_path.read_text(encoding="utf-8")
+        content = await asyncio.to_thread(file_path.read_text, encoding="utf-8")
         return content, {"path": str(file_path), "size": len(content)}
 
     async def _list_directory(self, path: str, **_: Any) -> _HandlerResult:
@@ -169,7 +170,7 @@ class FileSystemAgent(IAgent):
         if file_path.exists() and not overwrite:
             raise FileExistsError(path)
 
-        file_path.write_text(content, encoding="utf-8")
+        await asyncio.to_thread(file_path.write_text, content, encoding="utf-8")
         return (
             f"Archivo escrito: {path}",
             {"path": str(file_path), "bytes_written": len(content.encode("utf-8"))},
