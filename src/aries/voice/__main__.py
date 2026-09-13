@@ -63,6 +63,20 @@ async def main() -> None:
         LOGGER.warning("voice_enabled está en False, no se arranca el pipeline de voz")
         return
 
+    # Versión de onnxruntime logueada siempre al arrancar — un bug real ya
+    # nos costó tiempo de diagnóstico porque nadie registró qué versión
+    # estaba activa durante una corrida (ver PROGRESS.md, "Validación de
+    # VoicePipeline con hardware real": onnxruntime==1.28.0 da scores de
+    # wake word pegados en ~0.000001 sin importar el audio; 1.17.3/1.20.0
+    # no tienen ese problema). Sin este log, cualquier corrida futura deja
+    # la misma duda sin forma de resolverla después de los hechos.
+    try:
+        import onnxruntime
+
+        LOGGER.info("Versión de onnxruntime activa", version=onnxruntime.__version__)
+    except ImportError:
+        LOGGER.warning("No se pudo importar onnxruntime para loguear su versión")
+
     pipeline = _build_pipeline(settings)
     await pipeline.run_forever()
 
