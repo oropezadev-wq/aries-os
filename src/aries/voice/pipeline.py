@@ -13,6 +13,7 @@ import asyncio
 import re
 import unicodedata
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any, Optional
 from uuid import uuid4
 
@@ -20,10 +21,19 @@ import httpx
 
 from ..exceptions import VoiceError
 from ..logging import get_logger
+from ..routines.manager import ROUTINES_TOPIC
 from .audio_io import MicrophoneListener, SpeakerPlayer, record_until_silence
+from ..contracts.message_bus import IMessageBus
 from ..contracts.stt import ISTTProvider
 from ..contracts.tts import ITTSProvider
 from ..contracts.wake_word import IWakeWordProvider
+
+# docs/specs/MessageBus.spec.md sección 6.4: nombre de consumidor fijo, no
+# hostname+pid — un nombre que cambia en cada reinicio huérfana el PEL del
+# consumidor anterior. v1 asume un solo proceso VoicePipeline corriendo a
+# la vez (mismo documento).
+ROUTINES_CONSUMER_GROUP = "voice-pipeline"
+ROUTINES_CONSUMER_NAME = "main"
 
 # Decisión 5 de Voice.spec.md: frase de confirmación EXACTA, no un "sí"
 # suelto — mitiga (sin eliminar del todo) el riesgo de que STT transcriba
@@ -71,6 +81,7 @@ class VoicePipeline:
         tts: ITTSProvider,
         listener: MicrophoneListener,
         player: SpeakerPlayer,
+        message_bus: IMessageBus,
         config: Optional[VoicePipelineConfig] = None,
         http_client: Optional[httpx.AsyncClient] = None,
     ) -> None:
@@ -79,6 +90,11 @@ class VoicePipeline:
         self.tts = tts
         self.listener = listener
         self.player = player
+        # Mismo patrón que wake_word/stt/tts (docs/specs/Routines.spec.md
+        # sección 4): recibido por parámetro, nunca construido acá, para
+        # compartir el mismo `IMessageBus`/Redis que usa `RoutineManager`
+        # en el otro proceso.
+        self.message_bus = message_bus
         self.config = config or VoicePipelineConfig()
         self.logger = get_logger(self.__class__.__name__)
         self._http_client = http_client
@@ -200,14 +216,81 @@ class VoicePipeline:
         except Exception as error:  # red de seguridad final — nunca debe tumbar run_forever()
             self.logger.exception("Error inesperado en el pipeline de voz", error=str(error))
 
+    # ------------------------------------------------------------------
+    # Consumo de rutinas proactivas (docs/specs/Routines.spec.md sección 4,
+    # docs/specs/MessageBus.spec.md sección 6)
+    # ------------------------------------------------------------------
+
+    async def _consume_routines(self) -> None:
+        """Segundo loop concurrente de `run_forever()`: consume
+        `"routines.due"` y habla cada `SpeakAction` publicada por
+        `RoutineManager` (proceso de la API, posiblemente caído/desconectado
+        por un rato — de ahí Redis Streams en vez de pub/sub).
+
+        Comportamiento exacto, no negociable, especificado en
+        `MessageBus.spec.md` sección 6 — repetido acá en código, no solo en
+        docs:
+        - `ack()` se hace SIEMPRE después de terminar (hablado o
+          descartado), nunca antes de leer (6.2) — si el proceso crashea a
+          mitad de la síntesis, el mensaje queda en el PEL y se vuelve a
+          entregar al reconectar (6.4), en vez de perderse.
+        - Un mensaje vencido (`now > valid_until`) se descarta SIN hablar,
+          pero de todas formas se hace `ack()` (6.1) — dejarlo sin ack lo
+          dejaría reintentándose para siempre sin motivo.
+        - Nunca deja escapar una excepción no controlada, mismo criterio
+          que `run_once()` — un error puntual (payload malformado, TTS que
+          falla) no debe tumbar este loop de fondo.
+        """
+        subscription = self.message_bus.subscribe(
+            ROUTINES_TOPIC, group=ROUTINES_CONSUMER_GROUP, consumer=ROUTINES_CONSUMER_NAME
+        )
+        async for message in subscription:
+            try:
+                payload = message.payload
+                valid_until = datetime.fromisoformat(payload["valid_until"])
+                if datetime.now(UTC) > valid_until:
+                    self.logger.warning(
+                        "Rutina vencida, se descarta sin hablar",
+                        routine_id=payload.get("routine_id"),
+                        valid_until=payload["valid_until"],
+                    )
+                else:
+                    await self._speak(payload["text"])
+            except Exception as error:  # red de seguridad — nunca debe tumbar el loop
+                self.logger.exception(
+                    "Error inesperado consumiendo un mensaje de rutina, se descarta", error=str(error)
+                )
+            try:
+                await self.message_bus.ack(ROUTINES_TOPIC, ROUTINES_CONSUMER_GROUP, message.id)
+            except Exception as error:
+                # Un ack() fallido (ej. Redis caído justo en ese instante) no
+                # debe tumbar este loop de fondo — el mensaje queda en el PEL
+                # y se reintrega en la próxima conexión (6.4), consistente
+                # con la decisión ya tomada de preferir duplicar antes que
+                # perder (sección 4 de MessageBus.spec.md).
+                self.logger.warning(
+                    "No se pudo confirmar (ack) un mensaje de rutina", message_id=message.id, error=str(error)
+                )
+
     async def run_forever(self) -> None:
-        """Corre `run_once()` en loop hasta que se cancele la tarea."""
+        """Corre `run_once()` (wake word) y `_consume_routines()` (rutinas
+        proactivas) como dos tasks concurrentes hasta que se cancele la
+        tarea — factible sin reescribir nada del loop de wake word:
+        `_listen_for_activation_sync` ya corre en un hilo aparte vía
+        `asyncio.to_thread`, así que el event loop principal queda libre
+        para el segundo task."""
         self.logger.info(
             "Pipeline de voz arrancado, esperando wake word",
             wake_words=self.wake_word.get_wake_words(),
         )
+        routines_task = asyncio.create_task(self._consume_routines())
         try:
             while True:
                 await self.run_once()
         finally:
+            routines_task.cancel()
+            try:
+                await routines_task
+            except asyncio.CancelledError:
+                pass
             await self.close()

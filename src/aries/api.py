@@ -12,11 +12,13 @@ from .config.settings import Settings
 from .contracts.event_bus import IEventBus
 from .contracts.llm import ILLMProvider
 from .contracts.memory import IMemory
+from .contracts.message_bus import IMessageBus
 from .core import Kernel
 from .events import AsyncEventBus
 from .llm.ollama_provider import OllamaProvider
 from .logging import get_logger
 from .memory.sqlite_store import SQLiteMemoryStore
+from .messaging.redis_streams_bus import RedisStreamsMessageBus
 from .planner import Planner
 
 settings = Settings()
@@ -42,7 +44,11 @@ _agent_manager = AgentManager()
 _event_bus: IEventBus = AsyncEventBus()
 _llm_provider: ILLMProvider = OllamaProvider(settings)
 _memory: IMemory = SQLiteMemoryStore(settings.memory_db_path)
-_kernel = Kernel(settings, _memory, _llm_provider, _event_bus, _agent_manager)
+# `IMessageBus` real sobre Redis Streams (docs/specs/MessageBus.spec.md) —
+# el mismo `settings.redis_url` que consume `VoicePipeline` como proceso
+# aparte, así ambos hablan por el mismo stream "routines.due".
+_message_bus: IMessageBus = RedisStreamsMessageBus(settings.redis_url)
+_kernel = Kernel(settings, _memory, _llm_provider, _event_bus, _agent_manager, _message_bus)
 # Referencia a la tarea de fondo de `_kernel.run()` (bucle de housekeeping
 # de vida larga) — se crea en `startup_event()` y se espera en
 # `shutdown_event()`. Ver ambos hooks más abajo.

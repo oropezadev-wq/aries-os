@@ -12,8 +12,11 @@ from ..config.settings import Settings
 from ..contracts.event_bus import IEventBus
 from ..contracts.llm import ILLMProvider
 from ..contracts.memory import IMemory
+from ..contracts.message_bus import IMessageBus
 from ..exceptions import KernelError
 from ..logging import get_logger
+from ..routines.loader import load_routines
+from ..routines.manager import RoutineManager
 
 
 class Kernel:
@@ -26,6 +29,7 @@ class Kernel:
         llm_provider: ILLMProvider,
         event_bus: IEventBus,
         agent_manager: AgentManager,
+        message_bus: IMessageBus,
     ) -> None:
         # Import diferido: si `PluginRegistry` se importara al nivel de
         # módulo de este archivo, se cerraría un ciclo real de import
@@ -57,6 +61,17 @@ class Kernel:
         self.plugin_registry: PluginRegistry = PluginRegistry(
             event_bus, settings, agent_manager=self.agent_manager
         )
+        # `message_bus` recibido por parámetro, mismo criterio que
+        # `agent_manager`/`event_bus`: el Kernel no lo construye él mismo,
+        # así el mismo `IMessageBus` (Redis en producción) puede compartirse
+        # con `VoicePipeline`, que corre en otro proceso — ver
+        # docs/specs/Routines.spec.md sección 5.
+        self.routine_manager = RoutineManager(
+            agent_manager=self.agent_manager,
+            event_bus=event_bus,
+            message_bus=message_bus,
+            routines_max_staleness_seconds=settings.routines_max_staleness_seconds,
+        )
 
     async def initialize(self) -> None:
         """Configura los recursos iniciales del kernel."""
@@ -82,7 +97,23 @@ class Kernel:
         await self.event_bus.publish(KernelInitializedEvent())
         await self.memory.store("Kernel inicializado", "context", importance=1)
         await self._load_plugins()
+        self._load_routines()
         self.logger.debug("Kernel inicializado correctamente")
+
+    def _load_routines(self) -> None:
+        """Carga las rutinas válidas de `settings.routines_dir` en
+        `self.routine_manager` (mismo criterio que `_load_plugins()`: si el
+        directorio no existe, no es un error — `load_routines()` ya nunca
+        deja escapar `OSError`/`JSONDecodeError` crudos, ver
+        `routines/loader.py`)."""
+        routines = load_routines(self.settings.routines_dir)
+        self.routine_manager.load_routines(routines)
+        if routines:
+            self.logger.info(
+                "Rutinas cargadas durante Kernel.initialize()",
+                routines_dir=self.settings.routines_dir,
+                cantidad=len(routines),
+            )
 
     async def _load_plugins(self) -> None:
         """Descubre y carga los plugins válidos en `settings.plugins_dir`.
@@ -158,7 +189,13 @@ class Kernel:
 
         Corre hasta que `shutdown()` señale la salida, invocando
         `memory.clear_expired()` en el intervalo configurado en
-        `settings.kernel_housekeeping_interval_seconds`.
+        `settings.kernel_housekeeping_interval_seconds` y
+        `routine_manager.check_due()` en el intervalo (independiente, y por
+        diseño más fino) configurado en
+        `settings.routines_check_interval_seconds` — ver
+        docs/specs/Routines.spec.md sección 5: si ambos reusaran un único
+        intervalo, una rutina programada a horario fijo podría retrasarse
+        hasta el próximo ciclo de housekeeping general.
         """
         if not self._initialized:
             raise KernelError("El kernel debe inicializarse antes de ejecutarse.")
@@ -169,24 +206,45 @@ class Kernel:
 
         self._running = True
         self._stop_event = asyncio.Event()
-        interval = self.settings.kernel_housekeeping_interval_seconds
-        self.logger.info("Kernel en ejecución", housekeeping_interval_seconds=interval)
+        housekeeping_interval = self.settings.kernel_housekeeping_interval_seconds
+        routines_interval = self.settings.routines_check_interval_seconds
+        # Granularidad del `wait_for` = la más fina de las dos, para que
+        # ninguno de los dos ciclos se retrase esperando al otro.
+        tick_interval = min(housekeeping_interval, routines_interval)
+        self.logger.info(
+            "Kernel en ejecución",
+            housekeeping_interval_seconds=housekeeping_interval,
+            routines_check_interval_seconds=routines_interval,
+        )
 
         from .events import KernelStartingEvent
 
         await self.event_bus.publish(KernelStartingEvent())
 
+        # Arrancan "vencidos" a propósito, para que la primera iteración del
+        # while ejecute ambos de inmediato — mismo comportamiento que tenía
+        # el loop antes de agregar el segundo intervalo.
+        since_housekeeping = housekeeping_interval
+        since_routines_check = routines_interval
+
         try:
             while not self._stop_event.is_set():
-                eliminados = await self.memory.clear_expired()
-                if eliminados:
-                    self.logger.debug(
-                        "Housekeeping: memoria expirada limpiada", eliminados=eliminados
-                    )
+                if since_housekeeping >= housekeeping_interval:
+                    eliminados = await self.memory.clear_expired()
+                    if eliminados:
+                        self.logger.debug(
+                            "Housekeeping: memoria expirada limpiada", eliminados=eliminados
+                        )
+                    since_housekeeping = 0.0
+                if since_routines_check >= routines_interval:
+                    await self.routine_manager.check_due()
+                    since_routines_check = 0.0
                 try:
-                    await asyncio.wait_for(self._stop_event.wait(), timeout=interval)
+                    await asyncio.wait_for(self._stop_event.wait(), timeout=tick_interval)
                 except asyncio.TimeoutError:
                     pass
+                since_housekeeping += tick_interval
+                since_routines_check += tick_interval
             self.logger.info("Kernel completó su ciclo de ejecución")
         finally:
             self._running = False

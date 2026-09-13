@@ -15,6 +15,26 @@ from aries.events import BaseEvent
 from aries.memory.in_memory import InMemoryStore
 from aries.contracts.event_bus import IEventBus
 from aries.contracts.llm import ILLMProvider, LLMResponse
+from aries.contracts.message_bus import IMessageBus
+
+
+class FakeMessageBus(IMessageBus):
+    """`IMessageBus` fake — estos tests del Kernel no ejercitan Routines de
+    verdad (sin `routines_dir` configurado no hay nada que publicar), solo
+    necesitan un objeto que satisfaga el contrato para poder construir el
+    Kernel. Ver `tests/unit/test_routines_manager.py` para tests reales del
+    camino de publicación."""
+
+    async def publish(self, topic: str, payload: dict) -> str:
+        return "0-1"
+
+    async def subscribe(self, topic: str, group: str, consumer: str):
+        if False:  # pragma: no cover - nunca se llama en estos tests
+            yield
+        return
+
+    async def ack(self, topic: str, group: str, message_id: str) -> None:
+        return None
 
 
 class FakeLLMProvider(ILLMProvider):
@@ -55,7 +75,7 @@ class FakeEventBus(IEventBus):
 @pytest.mark.asyncio
 async def test_kernel_initialization() -> None:
     config = Settings()
-    kernel = Kernel(config, InMemoryStore(), FakeLLMProvider(), FakeEventBus(), AgentManager())
+    kernel = Kernel(config, InMemoryStore(), FakeLLMProvider(), FakeEventBus(), AgentManager(), FakeMessageBus())
 
     await kernel.initialize()
 
@@ -65,7 +85,7 @@ async def test_kernel_initialization() -> None:
 @pytest.mark.asyncio
 async def test_kernel_already_initialized() -> None:
     config = Settings()
-    kernel = Kernel(config, InMemoryStore(), FakeLLMProvider(), FakeEventBus(), AgentManager())
+    kernel = Kernel(config, InMemoryStore(), FakeLLMProvider(), FakeEventBus(), AgentManager(), FakeMessageBus())
 
     await kernel.initialize()
     await kernel.initialize()
@@ -77,7 +97,7 @@ async def test_kernel_already_initialized() -> None:
 async def test_kernel_shutdown() -> None:
     config = Settings()
     event_bus = FakeEventBus()
-    kernel = Kernel(config, InMemoryStore(), FakeLLMProvider(), event_bus, AgentManager())
+    kernel = Kernel(config, InMemoryStore(), FakeLLMProvider(), event_bus, AgentManager(), FakeMessageBus())
 
     await kernel.initialize()
     await kernel.shutdown()
@@ -90,7 +110,7 @@ async def test_kernel_init_with_unavailable_llm_provider() -> None:
     config = Settings()
     fake_provider = FakeLLMProvider(available=False)
     memory = InMemoryStore()
-    kernel = Kernel(config, memory, fake_provider, FakeEventBus(), AgentManager())
+    kernel = Kernel(config, memory, fake_provider, FakeEventBus(), AgentManager(), FakeMessageBus())
 
     await kernel.initialize()
 
@@ -103,7 +123,7 @@ async def test_kernel_init_with_unavailable_llm_provider() -> None:
 async def test_kernel_publishes_initialized_event() -> None:
     config = Settings()
     event_bus = FakeEventBus()
-    kernel = Kernel(config, InMemoryStore(), FakeLLMProvider(), event_bus, AgentManager())
+    kernel = Kernel(config, InMemoryStore(), FakeLLMProvider(), event_bus, AgentManager(), FakeMessageBus())
 
     await kernel.initialize()
 
@@ -122,7 +142,7 @@ async def test_kernel_publishes_initialized_event() -> None:
 async def test_kernel_publishes_shutdown_event() -> None:
     config = Settings()
     event_bus = FakeEventBus()
-    kernel = Kernel(config, InMemoryStore(), FakeLLMProvider(), event_bus, AgentManager())
+    kernel = Kernel(config, InMemoryStore(), FakeLLMProvider(), event_bus, AgentManager(), FakeMessageBus())
 
     await kernel.initialize()
     await kernel.shutdown()
@@ -136,7 +156,7 @@ async def test_kernel_publishes_shutdown_event() -> None:
 async def test_kernel_initialize_stores_context_memory_item() -> None:
     config = Settings()
     memory = InMemoryStore()
-    kernel = Kernel(config, memory, FakeLLMProvider(), FakeEventBus(), AgentManager())
+    kernel = Kernel(config, memory, FakeLLMProvider(), FakeEventBus(), AgentManager(), FakeMessageBus())
 
     await kernel.initialize()
 
@@ -150,7 +170,7 @@ async def test_kernel_run_stops_cleanly_on_shutdown() -> None:
     """Arranque y shutdown ordenado del Kernel real: `run()` corre en segundo
     plano hasta que `shutdown()` lo señala, sin necesitar cancelación."""
     config = Settings(kernel_housekeeping_interval_seconds=0.05)
-    kernel = Kernel(config, InMemoryStore(), FakeLLMProvider(), FakeEventBus(), AgentManager())
+    kernel = Kernel(config, InMemoryStore(), FakeLLMProvider(), FakeEventBus(), AgentManager(), FakeMessageBus())
 
     await kernel.initialize()
     run_task = asyncio.create_task(kernel.run())
@@ -168,7 +188,7 @@ async def test_kernel_run_stops_cleanly_on_shutdown() -> None:
 async def test_kernel_run_publishes_starting_event() -> None:
     config = Settings(kernel_housekeeping_interval_seconds=0.05)
     event_bus = FakeEventBus()
-    kernel = Kernel(config, InMemoryStore(), FakeLLMProvider(), event_bus, AgentManager())
+    kernel = Kernel(config, InMemoryStore(), FakeLLMProvider(), event_bus, AgentManager(), FakeMessageBus())
 
     await kernel.initialize()
     run_task = asyncio.create_task(kernel.run())
@@ -186,7 +206,7 @@ async def test_kernel_run_clears_expired_memory_periodically() -> None:
     desaparecer solo, sin llamar a `clear_expired()` manualmente."""
     config = Settings(kernel_housekeeping_interval_seconds=0.05)
     memory = InMemoryStore()
-    kernel = Kernel(config, memory, FakeLLMProvider(), FakeEventBus(), AgentManager())
+    kernel = Kernel(config, memory, FakeLLMProvider(), FakeEventBus(), AgentManager(), FakeMessageBus())
 
     await kernel.initialize()
     expired_item = await memory.store(

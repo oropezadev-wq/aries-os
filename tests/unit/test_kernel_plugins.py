@@ -20,10 +20,28 @@ from aries.config.settings import Settings
 from aries.contracts.agent import ActionStatus
 from aries.contracts.event_bus import IEventBus
 from aries.contracts.llm import ILLMProvider, LLMResponse
+from aries.contracts.message_bus import IMessageBus
 from aries.core.kernel import Kernel
 from aries.events import BaseEvent
 from aries.memory.in_memory import InMemoryStore
 from aries.plugins.events import PluginLoadedEvent, PluginUnloadedEvent
+
+
+class FakeMessageBus(IMessageBus):
+    """`IMessageBus` fake — mismo criterio que `tests/unit/test_kernel.py`:
+    estos tests no ejercitan Routines, solo necesitan satisfacer el
+    contrato para construir el Kernel."""
+
+    async def publish(self, topic: str, payload: dict) -> str:
+        return "0-1"
+
+    async def subscribe(self, topic: str, group: str, consumer: str):
+        if False:  # pragma: no cover - nunca se llama en estos tests
+            yield
+        return
+
+    async def ack(self, topic: str, group: str, message_id: str) -> None:
+        return None
 
 
 class FakeLLMProvider(ILLMProvider):
@@ -131,7 +149,7 @@ def test_default_plugins_dir_setting() -> None:
 @pytest.mark.asyncio
 async def test_kernel_with_missing_plugins_dir_loads_nothing_without_error(tmp_path: Path) -> None:
     settings = Settings(plugins_dir=str(tmp_path / "no_existe"))
-    kernel = Kernel(settings, InMemoryStore(), FakeLLMProvider(), FakeEventBus(), AgentManager())
+    kernel = Kernel(settings, InMemoryStore(), FakeLLMProvider(), FakeEventBus(), AgentManager(), FakeMessageBus())
 
     await kernel.initialize()
 
@@ -154,7 +172,7 @@ async def test_kernel_loads_valid_plugins_and_isolates_broken_one(tmp_path: Path
     _write_plugin(plugins_dir, "c_second_good", log_path, valid=True)
 
     settings = Settings(plugins_dir=str(plugins_dir))
-    kernel = Kernel(settings, InMemoryStore(), FakeLLMProvider(), FakeEventBus(), AgentManager())
+    kernel = Kernel(settings, InMemoryStore(), FakeLLMProvider(), FakeEventBus(), AgentManager(), FakeMessageBus())
 
     await kernel.initialize()
 
@@ -178,7 +196,7 @@ async def test_kernel_shutdown_unloads_plugins_in_reverse_order(tmp_path: Path) 
     _write_plugin(plugins_dir, "c_second_good", log_path, valid=True)
 
     settings = Settings(plugins_dir=str(plugins_dir))
-    kernel = Kernel(settings, InMemoryStore(), FakeLLMProvider(), FakeEventBus(), AgentManager())
+    kernel = Kernel(settings, InMemoryStore(), FakeLLMProvider(), FakeEventBus(), AgentManager(), FakeMessageBus())
 
     await kernel.initialize()
     await kernel.shutdown()
@@ -202,7 +220,7 @@ async def test_kernel_plugin_lifecycle_publishes_plugin_events(tmp_path: Path) -
 
     settings = Settings(plugins_dir=str(plugins_dir))
     event_bus = FakeEventBus()
-    kernel = Kernel(settings, InMemoryStore(), FakeLLMProvider(), event_bus, AgentManager())
+    kernel = Kernel(settings, InMemoryStore(), FakeLLMProvider(), event_bus, AgentManager(), FakeMessageBus())
 
     await kernel.initialize()
     assert any(isinstance(event, PluginLoadedEvent) for event in event_bus.published)
@@ -225,7 +243,7 @@ async def test_plugin_capability_is_dispatchable_via_agent_manager_like_a_native
     _write_plugin(plugins_dir, "greeter", log_path, valid=True)
 
     settings = Settings(plugins_dir=str(plugins_dir))
-    kernel = Kernel(settings, InMemoryStore(), FakeLLMProvider(), FakeEventBus(), AgentManager())
+    kernel = Kernel(settings, InMemoryStore(), FakeLLMProvider(), FakeEventBus(), AgentManager(), FakeMessageBus())
 
     await kernel.initialize()
 
@@ -258,7 +276,7 @@ async def test_plugin_capability_stops_being_dispatchable_after_kernel_shutdown(
     _write_plugin(plugins_dir, "greeter", log_path, valid=True)
 
     settings = Settings(plugins_dir=str(plugins_dir))
-    kernel = Kernel(settings, InMemoryStore(), FakeLLMProvider(), FakeEventBus(), AgentManager())
+    kernel = Kernel(settings, InMemoryStore(), FakeLLMProvider(), FakeEventBus(), AgentManager(), FakeMessageBus())
 
     await kernel.initialize()
     await kernel.shutdown()

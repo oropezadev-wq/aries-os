@@ -32,6 +32,24 @@ from aries.events import AsyncEventBus
 from aries.memory.in_memory import InMemoryStore
 from aries.contracts.llm import ILLMProvider
 from aries.contracts.llm import LLMResponse
+from aries.contracts.message_bus import IMessageBus
+
+
+class FakeMessageBus(IMessageBus):
+    """`IMessageBus` fake compartido por la fixture `kernel` — mismo
+    criterio que `tests/unit/test_kernel.py`: estos tests no ejercitan
+    Routines de verdad, solo necesitan satisfacer el contrato."""
+
+    async def publish(self, topic: str, payload: dict) -> str:
+        return "0-1"
+
+    async def subscribe(self, topic: str, group: str, consumer: str):
+        if False:  # pragma: no cover - nunca se llama en estos tests
+            yield
+        return
+
+    async def ack(self, topic: str, group: str, message_id: str) -> None:
+        return None
 
 
 class FakeLLMProvider(ILLMProvider):
@@ -68,7 +86,7 @@ def fixture_llm_provider() -> ILLMProvider:
 @pytest.fixture(name="kernel")
 async def fixture_kernel(app_config: Settings, llm_provider: ILLMProvider) -> AsyncGenerator[Kernel, None]:
     """Inicializa un kernel para uso en pruebas asincrónicas."""
-    kernel = Kernel(app_config, InMemoryStore(), llm_provider, AsyncEventBus(), AgentManager())
+    kernel = Kernel(app_config, InMemoryStore(), llm_provider, AsyncEventBus(), AgentManager(), FakeMessageBus())
     await kernel.initialize()
     yield kernel
     await kernel.shutdown()

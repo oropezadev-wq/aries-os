@@ -65,6 +65,18 @@ class Settings(BaseSettings):
         "aries_memory.db",
         description="Ruta del archivo SQLite (relativa al directorio de trabajo, o absoluta) usado por SQLiteMemoryStore, el backend persistente de IMemory. Distinto de database_url (Postgres, sin uso todavía) — este es específicamente el store de Memory",
     )
+    routines_dir: str = Field(
+        "routines",
+        description="Directorio (relativo al directorio de trabajo, o absoluto) donde Kernel.initialize() busca archivos de rutina válidos (uno por archivo .json) para cargar. Si no existe al arrancar, no se cargan rutinas — no es un error, mismo criterio que plugins_dir. Ver docs/specs/Routines.spec.md sección 3",
+    )
+    routines_check_interval_seconds: float = Field(
+        30.0,
+        description="Intervalo en segundos entre evaluaciones de RoutineManager.check_due() dentro del tick de Kernel.run() — separado de kernel_housekeeping_interval_seconds para que una rutina programada a horario fijo no se retrase hasta el próximo ciclo de housekeeping general. Ver docs/specs/Routines.spec.md sección 5",
+    )
+    routines_max_staleness_seconds: float = Field(
+        1800.0,
+        description="Máxima antigüedad (en segundos) que puede tener una ocurrencia de rutina vencida antes de descartarse en vez de ejecutarse tarde — evaluada tanto al publicar (RoutineManager.check_due()) como al consumir (VoicePipeline, vía el valid_until que viaja en el payload). Ver docs/specs/MessageBus.spec.md secciones 3 y 6.1",
+    )
 
     class Config:
         env_file = ".env"

@@ -19,6 +19,7 @@ de audio reales, generados con Piper) sin tocar hardware.
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import numpy as np
@@ -27,9 +28,14 @@ import pytest
 from aries.agents.manager import AgentManager
 from aries.api import app, get_planner
 from aries.contracts.llm import ILLMProvider, LLMResponse
+from aries.contracts.message_bus import BusMessage, IMessageBus
+from aries.contracts.stt import ISTTProvider
+from aries.contracts.tts import ITTSProvider, TTSResult
+from aries.contracts.wake_word import IWakeWordProvider
 from aries.events import AsyncEventBus
 from aries.memory.in_memory import InMemoryStore
 from aries.planner import Planner
+from aries.routines.manager import ROUTINES_TOPIC
 from aries.voice.audio_io import SAMPLE_RATE, wav_bytes_to_pcm
 from aries.voice.faster_whisper_provider import FasterWhisperProvider
 from aries.voice.openwakeword_provider import OpenWakeWordProvider
@@ -37,6 +43,25 @@ from aries.voice.pipeline import CONFIRMATION_PHRASE, VoicePipeline, VoicePipeli
 from aries.voice.piper_provider import PiperProvider
 
 FRAME_SIZE = 1280
+
+
+class FakeMessageBus(IMessageBus):
+    """`IMessageBus` fake — estos tests ejercitan `run_once()` directamente
+    (wake word -> STT -> POST /message -> TTS), nunca `run_forever()`, así
+    que el segundo loop de rutinas (`_consume_routines()`) nunca se llega a
+    correr. Solo hace falta satisfacer el contrato para construir el
+    `VoicePipeline`."""
+
+    async def publish(self, topic: str, payload: dict) -> str:
+        return "0-1"
+
+    async def subscribe(self, topic: str, group: str, consumer: str):
+        if False:  # pragma: no cover - nunca se llama en estos tests
+            yield
+        return
+
+    async def ack(self, topic: str, group: str, message_id: str) -> None:
+        return None
 
 
 class FakeLLMProvider(ILLMProvider):
@@ -175,6 +200,7 @@ def _make_pipeline(
         tts=real_providers["tts"],
         listener=listener,
         player=player,
+        message_bus=FakeMessageBus(),
         config=config,
         http_client=http_client,
     )
@@ -335,3 +361,177 @@ class TestVoicePipelineRunOnce:
             await pipeline.run_once()  # no debe lanzar
 
         assert player.played == []  # nunca llegó a sintetizar una respuesta
+
+
+class FakeWakeWordProvider(IWakeWordProvider):
+    """Doble mínimo — `_consume_routines()` no lo usa en absoluto, solo
+    hace falta satisfacer el constructor de `VoicePipeline`."""
+
+    def process_frame(self, frame):  # pragma: no cover - nunca se llama
+        raise NotImplementedError
+
+    def frame_size(self) -> int:
+        return FRAME_SIZE
+
+    async def is_available(self) -> bool:
+        return True
+
+    def get_wake_words(self) -> list[str]:
+        return ["hey_jarvis"]
+
+
+class FakeSTTProvider(ISTTProvider):
+    """Doble mínimo — mismo criterio que `FakeWakeWordProvider` arriba."""
+
+    async def transcribe(self, audio, language=None, **kwargs):  # pragma: no cover - nunca se llama
+        raise NotImplementedError
+
+    async def is_available(self) -> bool:
+        return True
+
+    def get_model_name(self) -> str:
+        return "fake"
+
+
+class FakeTTSProvider(ITTSProvider):
+    """TTS fake — evita depender de un modelo de Piper real solo para
+    probar `_consume_routines()`, que no ejercita nada de wake word/STT."""
+
+    def __init__(self) -> None:
+        self.synthesized: list[str] = []
+
+    async def synthesize(self, text: str, voice=None, **kwargs) -> TTSResult:
+        self.synthesized.append(text)
+        return TTSResult(audio=b"RIFF....WAVEfake", sample_rate=16000, voice="fake")
+
+    async def is_available(self) -> bool:
+        return True
+
+    def get_voice_name(self) -> str:
+        return "fake"
+
+
+class ScriptedMessageBus(IMessageBus):
+    """`IMessageBus` fake que entrega un guion fijo de mensajes vía
+    `subscribe()` (el generador termina solo al agotarlos, sin necesitar
+    cancelación — a diferencia de `RedisStreamsMessageBus`, que es de
+    duración infinita) y registra cada `ack()` recibido, para poder
+    verificar el orden exacto (hablar-o-descartar, LUEGO ack) sin depender
+    de Redis real."""
+
+    def __init__(self, messages: list) -> None:
+        self._messages = messages
+        self.acked: list[str] = []
+
+    async def publish(self, topic: str, payload: dict) -> str:
+        return "0-1"
+
+    async def subscribe(self, topic: str, group: str, consumer: str):
+        for message in self._messages:
+            yield message
+
+    async def ack(self, topic: str, group: str, message_id: str) -> None:
+        self.acked.append(message_id)
+
+
+def _make_consume_routines_pipeline(bus: ScriptedMessageBus, tts: FakeTTSProvider, player: FakeSpeakerPlayer) -> VoicePipeline:
+    return VoicePipeline(
+        wake_word=FakeWakeWordProvider(),
+        stt=FakeSTTProvider(),
+        tts=tts,
+        listener=ScriptedListener([]),
+        player=player,
+        message_bus=bus,
+    )
+
+
+class TestVoicePipelineConsumeRoutines:
+    """`_consume_routines()` — el segundo loop de `run_forever()` que
+    consume `"routines.due"` (docs/specs/Routines.spec.md sección 4,
+    docs/specs/MessageBus.spec.md sección 6). Pedido explícito del usuario
+    al aprobar el diseño: el camino de mensaje vencido también debe hacer
+    `ack()`, si no queda reintentándose en cada arranque sin resolverse
+    nunca."""
+
+    @pytest.mark.asyncio
+    async def test_speaks_non_stale_message_and_acks_after(self) -> None:
+        message = BusMessage(
+            id="1-0",
+            topic=ROUTINES_TOPIC,
+            payload={
+                "routine_id": "buenos-dias",
+                "occurrence": datetime.now(UTC).isoformat(),
+                "valid_until": (datetime.now(UTC) + timedelta(minutes=30)).isoformat(),
+                "text": "Buenos días",
+            },
+        )
+        bus = ScriptedMessageBus([message])
+        tts = FakeTTSProvider()
+        player = FakeSpeakerPlayer()
+        pipeline = _make_consume_routines_pipeline(bus, tts, player)
+
+        await pipeline._consume_routines()
+
+        assert tts.synthesized == ["Buenos días"]
+        assert len(player.played) == 1
+        assert bus.acked == ["1-0"]
+
+    @pytest.mark.asyncio
+    async def test_stale_message_is_discarded_without_speaking_but_still_acked(self) -> None:
+        """El caso que el usuario pidió confirmar explícitamente: un
+        mensaje con `valid_until` ya vencido NO se habla, pero de todas
+        formas se hace `ack()` — si no, quedaría atascado repitiéndose en
+        cada arranque sin resolverse nunca (MessageBus.spec.md 6.1)."""
+        message = BusMessage(
+            id="2-0",
+            topic=ROUTINES_TOPIC,
+            payload={
+                "routine_id": "buenos-dias",
+                "occurrence": (datetime.now(UTC) - timedelta(hours=6)).isoformat(),
+                "valid_until": (datetime.now(UTC) - timedelta(hours=5, minutes=30)).isoformat(),
+                "text": "Buenos días",
+            },
+        )
+        bus = ScriptedMessageBus([message])
+        tts = FakeTTSProvider()
+        player = FakeSpeakerPlayer()
+        pipeline = _make_consume_routines_pipeline(bus, tts, player)
+
+        await pipeline._consume_routines()
+
+        assert tts.synthesized == []  # nunca se sintetizó ni se habló
+        assert player.played == []
+        assert bus.acked == ["2-0"]  # pero SÍ se confirmó, igual
+
+    @pytest.mark.asyncio
+    async def test_multiple_messages_each_get_their_own_ack_in_order(self) -> None:
+        fresh = BusMessage(
+            id="3-0",
+            topic=ROUTINES_TOPIC,
+            payload={
+                "routine_id": "a",
+                "occurrence": datetime.now(UTC).isoformat(),
+                "valid_until": (datetime.now(UTC) + timedelta(minutes=30)).isoformat(),
+                "text": "primera",
+            },
+        )
+        stale = BusMessage(
+            id="4-0",
+            topic=ROUTINES_TOPIC,
+            payload={
+                "routine_id": "b",
+                "occurrence": (datetime.now(UTC) - timedelta(hours=2)).isoformat(),
+                "valid_until": (datetime.now(UTC) - timedelta(hours=1)).isoformat(),
+                "text": "segunda",
+            },
+        )
+        bus = ScriptedMessageBus([fresh, stale])
+        tts = FakeTTSProvider()
+        player = FakeSpeakerPlayer()
+        pipeline = _make_consume_routines_pipeline(bus, tts, player)
+
+        await pipeline._consume_routines()
+
+        assert tts.synthesized == ["primera"]
+        assert len(player.played) == 1
+        assert bus.acked == ["3-0", "4-0"]

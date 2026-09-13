@@ -15,6 +15,7 @@ import asyncio
 
 from ..config.settings import Settings
 from ..logging import get_logger
+from ..messaging.redis_streams_bus import RedisStreamsMessageBus
 from .audio_io import MicrophoneListener, SpeakerPlayer
 from .faster_whisper_provider import FasterWhisperProvider
 from .openwakeword_provider import OpenWakeWordProvider
@@ -47,12 +48,18 @@ def _build_pipeline(settings: Settings) -> VoicePipeline:
     if isinstance(audio_device, str) and audio_device.strip().lstrip("-").isdigit():
         audio_device = int(audio_device.strip())
 
+    # Mismo `settings.redis_url` que consume `RoutineManager` del lado de
+    # la API (`src/aries/api.py`) — ambos procesos hablan por el mismo
+    # stream "routines.due" (docs/specs/Routines.spec.md sección 4).
+    message_bus = RedisStreamsMessageBus(settings.redis_url)
+
     return VoicePipeline(
         wake_word=wake_word,
         stt=stt,
         tts=tts,
         listener=MicrophoneListener(device=audio_device),
         player=SpeakerPlayer(),
+        message_bus=message_bus,
         config=config,
     )
 
