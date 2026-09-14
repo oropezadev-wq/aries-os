@@ -101,6 +101,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     kernel_run_task = asyncio.create_task(kernel.run())
     app.state.kernel_run_task = kernel_run_task
 
+    # Puente de compatibilidad, no diseño final: `get_planner()` y los tests
+    # de integración leen estos globals directo (`api._kernel_run_task`,
+    # etc.). Con una sola instancia de `app` por proceso esto es correcto,
+    # pero es deuda conocida — con dos instancias de `app` corriendo en el
+    # mismo proceso, estos globals apuntarían a la última que arrancó, no a
+    # la que los llamó (ver PROGRESS.md).
     _llm_provider, _kernel, _kernel_run_task = llm_provider, kernel, kernel_run_task
 
     try:
