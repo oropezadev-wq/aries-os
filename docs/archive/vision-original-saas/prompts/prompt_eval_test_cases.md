@@ -1,0 +1,1 @@
+"Basado en 09_OBSERVABILITY_AND_EVALS.md, genera una suite de casos de evaluación para el workflow [NOMBRE], incluyendo happy path, ambigüedad, fallo externo, policy violation y action de alto riesgo."

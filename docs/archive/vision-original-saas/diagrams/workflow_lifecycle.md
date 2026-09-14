@@ -1,0 +1,1 @@
+created -> queued -> running -> waiting_input/waiting_approval/waiting_external -> completed/failed/cancelled

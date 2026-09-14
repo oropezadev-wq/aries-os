@@ -1,0 +1,13 @@
+Incoming Message
+  -> Webhook Validation
+  -> Normalize Payload
+  -> Find/Create Contact
+  -> Find/Create Session
+  -> Persist Message
+  -> Route Intent
+  -> Build Context
+  -> Start/Resume Execution
+  -> Validate Risk
+  -> Run Tool or Reply
+  -> Persist Outcome
+  -> Send Response

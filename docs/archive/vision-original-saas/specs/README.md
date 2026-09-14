@@ -1,0 +1,19 @@
+La carpeta specs/ contiene especificaciones detalladas por módulo o funcionalidad. Cada spec debe tener:
+
+propósito
+alcance
+dependencias
+entidades implicadas
+flujos
+errores esperados
+observabilidad
+criterios de aceptación
+Specs iniciales sugeridas
+spec_auth_and_identity.md
+spec_contacts_and_sessions.md
+spec_channel_ingestion.md
+spec_workflow_runtime.md
+spec_tool_registry_and_invocation.md
+spec_review_queue.md
+spec_knowledge_ingestion_and_retrieval.md
+spec_analytics_and_events.md

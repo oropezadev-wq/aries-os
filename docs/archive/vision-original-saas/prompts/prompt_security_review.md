@@ -1,0 +1,1 @@
+"Revisa este módulo usando 08_SECURITY_AND_MULTI_TENANCY.md. Identifica riesgos de tenant leakage, permisos, secrets handling, logging sensible, idempotencia y approval gaps."
