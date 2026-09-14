@@ -191,9 +191,8 @@ class TestPostMessageEndToEnd:
         assert response.json()["success"] is True
 
     def test_missing_user_input_returns_422(self) -> None:
-        client = TestClient(app)
-
-        response = client.post("/message", json={})
+        with TestClient(app) as client:
+            response = client.post("/message", json={})
 
         assert response.status_code == 422  # validación de Pydantic en el request body
 
