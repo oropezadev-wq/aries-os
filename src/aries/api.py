@@ -6,8 +6,10 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import redis.asyncio as redis_asyncio
 from fastapi import Depends, FastAPI
 from pydantic import BaseModel
+from redis.exceptions import RedisError
 
 from .agents.manager import AgentManager
 from .config.settings import Settings
@@ -151,10 +153,54 @@ class MessageResponse(BaseModel):
     error: str | None = None
 
 
-@app.get("/health", summary="Estado de la aplicación")
-async def health_check() -> dict[str, str]:
-    """Comprueba que la API está disponible."""
-    return {"status": "ok", "environment": settings.environment}
+class HealthChecks(BaseModel):
+    """Detalle por dependencia externa chequeada en `/health`."""
+
+    redis: str
+
+
+class HealthResponse(BaseModel):
+    """Respuesta de `GET /health`."""
+
+    status: str
+    environment: str
+    checks: HealthChecks
+
+
+async def _check_redis() -> str:
+    """PING real a Redis, con timeout acotado — antes `/health` devolvía
+    "ok" fijo sin chequear nada, dejando pasar el gate de
+    `scripts/start-aries.ps1` con la API arriba pero Redis caído: las
+    rutinas dejaban de sonar sin ninguna señal visible (ver conversación
+    2026-09-15). No pasa por `IMessageBus`/`RedisStreamsMessageBus` a
+    propósito — es un chequeo de conectividad puntual, no una operación
+    del contrato de mensajería."""
+    try:
+        client = redis_asyncio.Redis.from_url(
+            settings.redis_url, socket_timeout=3, socket_connect_timeout=3
+        )
+        try:
+            await client.ping()
+        finally:
+            await client.aclose()
+        return "ok"
+    except RedisError as error:
+        return f"error: {error}"
+
+
+@app.get("/health", summary="Estado de la aplicación", response_model=HealthResponse)
+async def health_check() -> HealthResponse:
+    """Comprueba que la API está disponible y que Redis responde de
+    verdad. Siempre devuelve HTTP 200 (no rompe a quien solo mira el
+    código de estado, ej. `scripts/start-aries.ps1`) — la salud real vive
+    en el body: `status` es `"degraded"` si alguna dependencia falla."""
+    redis_status = await _check_redis()
+    overall_status = "ok" if redis_status == "ok" else "degraded"
+    return HealthResponse(
+        status=overall_status,
+        environment=settings.environment,
+        checks=HealthChecks(redis=redis_status),
+    )
 
 
 @app.post("/message", summary="Envía un mensaje al Planner", response_model=MessageResponse)
