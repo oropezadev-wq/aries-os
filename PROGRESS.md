@@ -3,6 +3,18 @@
 > Fuente de verdad del estado del proyecto. Se actualiza al TERMINAR cada tarea, no al empezarla.
 > Antes de cualquier tarea nueva, leer este archivo primero.
 
+## Seguimiento de uso real — criterio de éxito de Fase 1 (`docs/VISION.md`)
+
+> Criterio: **2 semanas SEGUIDAS** de uso real diario de Voice + Routines +
+> al menos 2 agentes, sin ninguna falla grave. Falla grave = algo que
+> impide usar el sistema (no un bug cosmético). **Una falla grave resetea
+> este contador a cero**, no descuenta solo ese día — un criterio que
+> nadie mide no sirve, por eso una línea acá por cada día real.
+
+| Día | Fecha | Voice | Routines | Agentes usados | Falla grave | Notas |
+|---|---|---|---|---|---|---|
+| 1 | 2026-09-15 | pendiente | pendiente | pendiente | pendiente | Día 1 del contador — confirmado por el usuario que arranca hoy. Completar el resto de la fila al cierre del día. |
+
 ## Investigación de los 2 commits inesperados (Tarea 0, 2026-07-24) — archivado
 
 Cerrado: el contenido de ambos commits coincidía 100% con trabajo ya documentado; el mecanismo de cómo se comitearon quedó sin confirmar (sospecha: checkpoint del entorno/extensión, no `git commit` propio). Detalle completo movido a [`docs/archive/2026-09-12-historial-implementacion.md`](../docs/archive/2026-09-12-historial-implementacion.md).
