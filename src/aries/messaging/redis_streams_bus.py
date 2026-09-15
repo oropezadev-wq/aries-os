@@ -31,6 +31,23 @@ _PAYLOAD_FIELD = "payload"
 # castea acá, una sola vez, en vez de perder el tipado en cada uso.
 _XReadGroupResponse = list[tuple[str, list[tuple[str, dict[str, str]]]]]
 
+# `BLOCK` (ms) del `XREADGROUP` que espera mensajes nuevos en `subscribe()`
+# — Redis mantiene la conexión abierta hasta este tiempo antes de responder
+# vacío si no llega nada. Validado con hardware real (2026-09-14): el
+# cliente de `redis-py` por defecto usa `socket_timeout=5` (segundos) —
+# EXACTAMENTE igual a este `BLOCK` de 5000ms, sin ningún margen. Esa
+# igualdad hace que el propio timeout de lectura del socket del cliente
+# compita en una carrera contra la expiración del `BLOCK` del lado del
+# servidor: con la latencia de red/proceso encima, el cliente gana esa
+# carrera seguido y lanza un `TimeoutError` espurio (visto en la práctica
+# cada ~7s: 5s de socket_timeout + 2s de `reconnect_delay_seconds`) — NO
+# es una caída real de Redis, es un long-poll normal malinterpretado como
+# error. `_SOCKET_TIMEOUT_SECONDS` abajo se deriva de esta misma constante
+# con margen amplio, a propósito, para que ambos números no puedan volver
+# a desincronizarse en silencio.
+_BLOCK_MS = 5000
+_SOCKET_TIMEOUT_SECONDS = (_BLOCK_MS / 1000) + 10
+
 
 class RedisStreamsMessageBus(IMessageBus):
     """`publish` → `XADD` (con `MAXLEN ~` para retención, sección 5 de
@@ -55,7 +72,11 @@ class RedisStreamsMessageBus(IMessageBus):
 
     def _get_client(self) -> redis.Redis:
         if self._client is None:
-            self._client = redis.Redis.from_url(self._redis_url, decode_responses=True)
+            self._client = redis.Redis.from_url(
+                self._redis_url,
+                decode_responses=True,
+                socket_timeout=_SOCKET_TIMEOUT_SECONDS,
+            )
         return self._client
 
     async def aclose(self) -> None:
@@ -111,7 +132,7 @@ class RedisStreamsMessageBus(IMessageBus):
                 while True:
                     response = cast(
                         _XReadGroupResponse,
-                        await client.xreadgroup(group, consumer, streams={topic: ">"}, count=10, block=5000),
+                        await client.xreadgroup(group, consumer, streams={topic: ">"}, count=10, block=_BLOCK_MS),
                     )
                     for _stream_name, entries in response or []:
                         for entry_id, fields in entries:
