@@ -75,6 +75,35 @@ class RoutineManager:
         self._state = {
             routine_id: self._state.get(routine_id, RoutineRuntimeState()) for routine_id in self._routines
         }
+        for routine in self._routines.values():
+            self.logger.info(
+                "Rutina cargada",
+                routine_id=routine.id,
+                enabled=routine.enabled,
+                detalle=self._describe_next_occurrence(routine),
+            )
+
+    def _describe_next_occurrence(self, routine: RoutineDefinition) -> str:
+        """Calcula (sin efectos secundarios — no toca `state.pending_occurrence`)
+        cuándo `check_due()` va a considerar vencida esta rutina, para
+        loguearlo en `load_routines()`. Puramente de diagnóstico: sin esto,
+        un cron cuyo `anchor` (`last_fired_occurrence` o `routine.loaded_at`)
+        ya quedó después del horario objetivo salta a la ocurrencia del día
+        siguiente completamente en silencio — `_check_one()` simplemente
+        hace `if occurrence > now: return`, sin loguear nada. Confirmado
+        como la causa real de una rutina de prueba que "cargó bien pero
+        nunca se publicó" durante la validación de hardware del
+        2026-09-14: reprogramar el archivo de la rutina sin reiniciar la
+        API (o reiniciar justo después de que la hora objetivo ya pasó)
+        hace que `croniter` calcule mañana en vez de hoy, sin ninguna señal
+        visible hasta este log."""
+        if routine.on_startup:
+            return "se dispara en este arranque (on_startup)"
+        assert routine.cron is not None  # garantizado por loader.py
+        state = self._state[routine.id]
+        anchor = state.last_fired_occurrence or routine.loaded_at
+        next_occurrence = croniter(routine.cron, anchor).get_next(datetime)
+        return f"próxima ocurrencia calculada: {next_occurrence.isoformat()} (ancla: {anchor.isoformat()})"
 
     def list_routines(self) -> list[RoutineDefinition]:
         return list(self._routines.values())
