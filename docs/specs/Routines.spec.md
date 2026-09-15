@@ -200,6 +200,88 @@ no implementado ahora porque no hay evidencia de que el proceso de la
 API se reinicie con la frecuencia suficiente para que valga la pena
 hoy.
 
+### 1.2 — Zona horaria de las expresiones cron `[DECISIÓN — campo nuevo, no implementado todavía]`
+
+**Encontrado en la validación de hardware real (2026-09-14/15), señalado
+por el agente de pago del usuario, no hipotético:** `RoutineManager`
+ancla `croniter` en `datetime.now(UTC)` — `routine.loaded_at` y
+`state.last_fired_occurrence` son siempre timezone-aware en UTC (sección
+1.1). Pero una persona escribe una rutina pensando en su propia hora de
+pared: "despertame a las 7am" significa 7am en su zona, no 7am UTC. Con
+una zona sin horario de verano (ej. `America/Lima`, UTC-5 fijo, la del
+usuario hoy) el offset entre "lo que la persona quiso decir" y "lo que
+`croniter` interpreta" es constante — si se descuenta mentalmente al
+escribir el cron a mano, el resultado es correcto y estable.
+
+**El problema real es DST.** El mismo cron, escrito una sola vez, deja de
+corresponder a las 7am de pared durante la mitad del año en cualquier
+zona con horario de verano — sin ningún error, sin ningún log, una
+sorpresa silenciosa de exactamente el tipo que este documento existe para
+evitar (mismo espíritu que la sección 1.1 y `MessageBus.spec.md` sección
+6.1). Escribir varias rutinas reales asumiendo el offset de hoy antes de
+resolver esto es el retrabajo futuro exacto que el criterio general del
+usuario para este proyecto pide evitar (ver nota introductoria de este
+documento).
+
+**Decisión: cada `RoutineDefinition` lleva un campo `timezone` explícito**
+(nombre IANA, ej. `"America/Lima"`, resuelto vía `zoneinfo` — librería
+estándar de Python, sin dependencia nueva) en vez de asumir un offset
+implícito calculado una vez por quien escribe el archivo:
+
+```python
+@dataclass(frozen=True)
+class RoutineDefinition:
+    id: str
+    action: RoutineAction
+    cron: str | None = None
+    on_startup: bool = False
+    enabled: bool = True
+    timezone: str = ""  # IANA, ej. "America/Lima" — "" = usa
+                         # settings.routines_default_timezone (ver abajo)
+```
+
+**Alternativa descartada: dejar todo en UTC y que la conversión de hora
+local a UTC sea responsabilidad de quien escribe la rutina.** Es
+exactamente la decisión que ya produjo el hallazgo de arriba — no falla
+al escribir la rutina, falla en silencio dos veces al año en cualquier
+zona con DST, y para cuando falla puede haber varias rutinas reales
+escritas ya asumiendo el offset viejo. Documentar "tu responsabilidad
+convertir a UTC" no es gratis: es delegar un bug conocido a que alguien
+lo redescubra en producción.
+
+**Default vía `Settings`, no repetido en cada archivo:** nuevo campo
+`routines_default_timezone: str = "UTC"` — default neutral a nivel de
+código (no hardcodea la ubicación de ningún usuario específico en el
+repo), configurable por `.env`/variable de entorno
+(`ROUTINES_DEFAULT_TIMEZONE=America/Lima` para este despliegue en
+particular). Una rutina con `timezone` vacío usa este default; una rutina
+puntual puede sobreescribirlo (ej. una que habla en la hora de otro huso).
+
+**Cómo se usa (diseño; no implica repensar nada del resto del pipeline):**
+`RoutineManager` convierte el `anchor` (`state.last_fired_occurrence` o
+`routine.loaded_at`, ambos ya timezone-aware) a la zona de la rutina —
+`anchor.astimezone(ZoneInfo(routine.timezone or settings.routines_default_timezone))`
+— antes de pasarlo a `croniter`, para que lea los campos de hora/minuto
+del cron contra el calendario civil correcto de esa zona (`zoneinfo`
+resuelve las transiciones de DST automáticamente al convertir entre
+zonas, sin tabla de offsets a mano). Nada más del pipeline cambia:
+`occurrence`/`valid_until` siguen siendo `datetime` timezone-aware, y
+`isoformat()` en el payload de `IMessageBus` (`MessageBus.spec.md`
+sección 6.1) ya incluye el offset correcto sin importar de qué zona vino
+— la comparación de staleness (`(now - occurrence).total_seconds()`)
+tampoco cambia: la aritmética entre `datetime` aware normaliza a UTC
+internamente sin importar el tzinfo de cada operando.
+
+**No implementado todavía — instrucción explícita del usuario.** Esta
+sección existe para que las rutinas reales que se escriban de acá en más
+ya asuman este campo (o su default), y no haga falta reescribirlas
+cuando se implemente. Cuando se implemente, toca `routines/models.py`
+(campo nuevo), `routines/loader.py` (validar el nombre IANA, mismo
+criterio que ya valida `cron`), `routines/manager.py` (conversión de
+`anchor` antes de `croniter`) y `config/settings.py`
+(`routines_default_timezone`) — no toca `docs/specs/MessageBus.spec.md`
+ni `docs/contracts/IMessageBus.md`, según el párrafo anterior.
+
 ## 2. ¿`RoutineManager` necesita un contrato (`IRoutineManager`)? `[CONFIRMADO]`
 
 **Recomendación: no.** Mismo razonamiento que ya se usó para no crear un
