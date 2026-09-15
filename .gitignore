@@ -64,3 +64,8 @@ dist/
 .DS_Store
 Thumbs.db
 *.egg-info/
+
+# Estado/logs de scripts/start-aries.ps1 (supervisor de arranque) — dato
+# de runtime de esta máquina, nunca se versiona.
+.aries/
+logs/
