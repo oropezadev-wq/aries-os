@@ -75,12 +75,17 @@ def _clear_overrides():
 
 class TestHealthStillWorks:
     def test_health_endpoint_unaffected(self) -> None:
-        client = TestClient(app)
-
-        response = client.get("/health")
+        # Con lifespan real (`with`): el detalle de `/health` depende del
+        # `app.state` que arma el lifespan. No se asserta `status == "ok"`
+        # porque eso dependería de que haya Redis y Ollama reales corriendo
+        # en la máquina — el estado de esas dependencias se prueba en
+        # `test_api_health.py`. Acá solo: responde 200 y el Kernel real está vivo.
+        with TestClient(app) as client:
+            response = client.get("/health")
 
         assert response.status_code == 200
-        assert response.json()["status"] == "ok"
+        assert response.json()["status"] in {"ok", "degraded"}
+        assert response.json()["checks"]["kernel"]["status"] == "ok"
 
 
 class TestPostMessageEndToEnd:

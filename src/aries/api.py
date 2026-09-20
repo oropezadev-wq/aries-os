@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Iterable
 from contextlib import asynccontextmanager
+from typing import Literal
 
 import redis.asyncio as redis_asyncio
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Request
 from pydantic import BaseModel
-from redis.exceptions import RedisError
 
 from .agents.manager import AgentManager
 from .config.settings import Settings
@@ -27,6 +27,14 @@ from .planner import Planner
 
 settings = Settings()
 logger = get_logger("aries.api", settings.log_level)
+
+# Topes duros de `GET /health`: un health que se bloquea es peor que uno que
+# miente. Cada probe tiene su propio tope, y el conjunto tiene uno global
+# como red final por si algún probe ignora la cancelación. Se leen en
+# runtime (no se copian a otras constantes) para que los tests los puedan
+# reducir con `monkeypatch`.
+_HEALTH_CHECK_TIMEOUT_SECONDS = 2.0
+_HEALTH_TOTAL_TIMEOUT_SECONDS = 3.0
 
 # Instancias compartidas del proceso — singletons a nivel de módulo.
 # `POST /message` es el "front door" elegido en docs/specs/Planner.spec.md
@@ -95,9 +103,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     llm_provider: ILLMProvider = OllamaProvider(settings)
     kernel = Kernel(settings, _memory, llm_provider, _event_bus, _agent_manager, _message_bus)
+    # Cliente de Redis dedicado a `/health`, reusado entre llamadas (ninguna
+    # abre una conexión nueva). Se crea acá y se cierra abajo, por el mismo
+    # motivo que `llm_provider`: un cliente de módulo cerrado en un shutdown
+    # rompería el startup siguiente. No pasa por `RedisStreamsMessageBus`: es
+    # solo lectura de estado, no una operación del contrato de mensajería.
+    health_redis = redis_asyncio.Redis.from_url(
+        settings.redis_url,
+        socket_timeout=_HEALTH_CHECK_TIMEOUT_SECONDS,
+        socket_connect_timeout=_HEALTH_CHECK_TIMEOUT_SECONDS,
+    )
 
     app.state.llm_provider = llm_provider
     app.state.kernel = kernel
+    app.state.health_redis = health_redis
 
     await kernel.initialize()
     kernel_run_task = asyncio.create_task(kernel.run())
@@ -117,6 +136,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await kernel.shutdown()
         await kernel_run_task
         await llm_provider.close()
+        await health_redis.aclose()
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
@@ -153,53 +173,128 @@ class MessageResponse(BaseModel):
     error: str | None = None
 
 
-class HealthChecks(BaseModel):
-    """Detalle por dependencia externa chequeada en `/health`."""
+class HealthCheck(BaseModel):
+    """Resultado de un chequeo individual de `GET /health`.
 
-    redis: str
+    `critical` dice qué significa que ESTE check falle, no si falló: un
+    check crítico caído es una falla grave del criterio de éxito de Fase 1
+    (`docs/VISION.md`); uno no crítico solo degrada.
+    """
+
+    status: Literal["ok", "error"]
+    critical: bool
+    detail: str | None = None
+
+
+class HealthChecks(BaseModel):
+    """Detalle por chequeo de `GET /health`."""
+
+    kernel: HealthCheck
+    redis: HealthCheck
+    ollama: HealthCheck
 
 
 class HealthResponse(BaseModel):
-    """Respuesta de `GET /health`."""
+    """Respuesta de `GET /health`. `status` se deriva de `checks`: `ok` si
+    todos pasan, `degraded` si falla alguno no crítico, `critical` si falla
+    alguno crítico."""
 
-    status: str
+    status: Literal["ok", "degraded", "critical"]
     environment: str
     checks: HealthChecks
 
 
-async def _check_redis() -> str:
-    """PING real a Redis, con timeout acotado — antes `/health` devolvía
-    "ok" fijo sin chequear nada, dejando pasar el gate de
-    `scripts/start-aries.ps1` con la API arriba pero Redis caído: las
-    rutinas dejaban de sonar sin ninguna señal visible (ver conversación
-    2026-09-15). No pasa por `IMessageBus`/`RedisStreamsMessageBus` a
-    propósito — es un chequeo de conectividad puntual, no una operación
-    del contrato de mensajería."""
+def _derive_status(checks: Iterable[HealthCheck]) -> Literal["ok", "degraded", "critical"]:
+    failed = [check for check in checks if check.status != "ok"]
+    if any(check.critical for check in failed):
+        return "critical"
+    return "degraded" if failed else "ok"
+
+
+def _check_kernel(kernel_run_task: asyncio.Task[None] | None) -> HealthCheck:
+    """Crítico: si el loop de `Kernel.run()` murió, las rutinas no disparan
+    nunca y nada más lo avisa — la falla grave del criterio de Fase 1. Es
+    lectura de estado en memoria (sin I/O), por eso no lleva timeout. Cuando
+    murió, el detalle incluye la causa (`Task.exception()`)."""
+    if kernel_run_task is None:
+        return HealthCheck(status="error", critical=True, detail="Kernel no inicializado")
+    if not kernel_run_task.done():
+        return HealthCheck(status="ok", critical=True)
+    if kernel_run_task.cancelled():
+        detail = "el loop de run() fue cancelado"
+    else:
+        error = kernel_run_task.exception()
+        detail = f"el loop de run() terminó con {error!r}" if error else "el loop de run() terminó"
+    return HealthCheck(status="error", critical=True, detail=detail)
+
+
+async def _probe_redis(client: redis_asyncio.Redis | None) -> None:
+    if client is None:
+        raise RuntimeError("cliente de Redis del health no inicializado")
+    await client.ping()
+
+
+async def _probe_ollama(provider: ILLMProvider | None) -> None:
+    if provider is None:
+        raise RuntimeError("proveedor LLM no inicializado")
+    if not await provider.is_available():
+        raise RuntimeError("Ollama no disponible")
+
+
+async def _run_probe(probe: Awaitable[None], *, critical: bool) -> HealthCheck:
+    """Ejecuta un probe con tope duro. Nunca propaga: cualquier falla, o
+    exceder el tope, queda como un `HealthCheck` en `error` — el endpoint no
+    puede quedar bloqueado ni caerse por una dependencia."""
     try:
-        client = redis_asyncio.Redis.from_url(
-            settings.redis_url, socket_timeout=3, socket_connect_timeout=3
-        )
-        try:
-            await client.ping()
-        finally:
-            await client.aclose()
-        return "ok"
-    except RedisError as error:
-        return f"error: {error}"
+        await asyncio.wait_for(probe, timeout=_HEALTH_CHECK_TIMEOUT_SECONDS)
+    except TimeoutError:
+        return HealthCheck(status="error", critical=critical, detail=f"timeout ({_HEALTH_CHECK_TIMEOUT_SECONDS}s)")
+    except Exception as error:
+        return HealthCheck(status="error", critical=critical, detail=str(error) or type(error).__name__)
+    return HealthCheck(status="ok", critical=critical)
 
 
 @app.get("/health", summary="Estado de la aplicación", response_model=HealthResponse)
-async def health_check() -> HealthResponse:
-    """Comprueba que la API está disponible y que Redis responde de
-    verdad. Siempre devuelve HTTP 200 (no rompe a quien solo mira el
-    código de estado, ej. `scripts/start-aries.ps1`) — la salud real vive
-    en el body: `status` es `"degraded"` si alguna dependencia falla."""
-    redis_status = await _check_redis()
-    overall_status = "ok" if redis_status == "ok" else "degraded"
+async def health_check(request: Request) -> HealthResponse:
+    """Estado real de Aries: `kernel` (loop de `run()` vivo, crítico),
+    `redis` (PING) y `ollama` (`is_available()`), estos dos no críticos.
+
+    Siempre devuelve HTTP 200, a propósito: el código HTTP es solo
+    liveness ("el proceso sirve y el Kernel terminó de inicializar", ya que
+    uvicorn ejecuta el startup del lifespan antes de abrir el puerto) — es
+    lo único que mira `scripts/start-aries.ps1`. Ninguna dependencia es
+    dura hoy (Redis conecta perezoso y reintenta; Ollama solo degrada), así
+    que un 503 no tendría un disparador legítimo. La salud real vive en
+    `status`/`checks` del body.
+
+    Redis y Ollama se sondean en paralelo (peor caso: el tope de un probe,
+    no la suma), con clientes reusados de `app.state` — sin conexiones
+    nuevas por llamada y sin caché, a propósito: no hay ningún poller que
+    lo justifique todavía."""
+    state = request.app.state
+    probes = {
+        "redis": asyncio.create_task(_run_probe(_probe_redis(getattr(state, "health_redis", None)), critical=False)),
+        "ollama": asyncio.create_task(_run_probe(_probe_ollama(getattr(state, "llm_provider", None)), critical=False)),
+    }
+    _, pending = await asyncio.wait(probes.values(), timeout=_HEALTH_TOTAL_TIMEOUT_SECONDS)
+    for task in pending:
+        task.cancel()
+
+    results = {
+        name: task.result()
+        if task not in pending
+        else HealthCheck(status="error", critical=False, detail=f"timeout global ({_HEALTH_TOTAL_TIMEOUT_SECONDS}s)")
+        for name, task in probes.items()
+    }
+    checks = HealthChecks(
+        kernel=_check_kernel(getattr(state, "kernel_run_task", None)),
+        redis=results["redis"],
+        ollama=results["ollama"],
+    )
     return HealthResponse(
-        status=overall_status,
+        status=_derive_status([checks.kernel, checks.redis, checks.ollama]),
         environment=settings.environment,
-        checks=HealthChecks(redis=redis_status),
+        checks=checks,
     )
 
 
