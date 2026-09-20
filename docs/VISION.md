@@ -114,6 +114,34 @@ tampoco respecto a la Fase 2 — es una secuencia estricta: primero el
 motor demuestra que aguanta 2 semanas reales de uso diario, recién
 después se le suma superficie nueva.
 
+#### Candidato post-criterio: AndroidAgent vía Google ARTEMIS (Apache-2.0)
+
+Control de un celular Android real con instrucciones en lenguaje
+natural. Se suma como tercero a la etapa post-criterio de Fase 1;
+browsing y Home Assistant van primero y no se reemplazan.
+
+**Bloqueado por dependencia externa:** ARTEMIS hoy exige un modelo con
+visión en la nube. Decisión tomada: no se envían capturas del celular
+personal a un tercero. Queda en espera del VLM local que figura en su
+roadmap, sin fecha — puede no habilitarse nunca.
+
+**Forma de integración decidida:** `IAgent` (`AndroidAgent`) consumiendo
+el servidor HTTP vía `artemis-client`. No MCP (Aries no es cliente MCP),
+no `ITool` (la acción es una instrucción en lenguaje natural, no un
+schema puntual).
+
+**Alcance inicial: solo lectura** (leer pantalla y reportar). El agente
+acepta instrucciones genéricas desde el diseño; el límite de solo
+lectura vive en una capa de permisos separada, no dentro del agente.
+Concepto nuevo, no cubierto por `requires_confirmation`. Pendiente de
+verificar: si ARTEMIS puede restringirse a acciones no destructivas de
+su lado — sin eso, el límite es convención, no garantía.
+
+**Otros puntos abiertos:** colisión de puerto 8000 con la API de Aries;
+ADB/scrcpy/FFmpeg reintroducen binarios externos que Voice evitó a
+propósito; latencia (30s a varios minutos por tarea) obliga a despacho
+fire-and-forget con retorno por `MessageBus`.
+
 ---
 
 ## Fase 2 — Plataforma SaaS multi-tenant (visión de largo plazo)
