@@ -15,6 +15,8 @@
 
 **Regla aclarada el 2026-09-20 (decisión del usuario, ver `docs/VISION.md`):** una caída del equipo por hardware (apagado o reinicio espontáneo) NO resetea el contador si Aries se recupera solo al volver a iniciar sesión, sin intervención. Se anota igual acá, en la fila del día, con su nota.
 
+**Excepción temporal (2026-09-20, decisión del usuario, ver `docs/VISION.md`):** la tarea de Task Scheduler "Aries OS" está desregistrada (verificado), así que Aries ya no arranca solo. Mientras siga así por el problema eléctrico del equipo, arrancarlo a mano tras una caída del equipo no es falla grave (se anota igual). Rige hasta conseguir regulador/UPS y volver a registrar la tarea (`scripts\register-aries-task.ps1`); al hacerlo, quitar la excepción de `docs/VISION.md`. Mientras tanto Aries se arranca a mano con `scripts\start-aries.ps1`.
+
 | Día | Fecha | Voice | Routines | Agentes usados | Falla grave | Notas |
 |---|---|---|---|---|---|---|
 | 1 | 2026-09-20 | pendiente | pendiente | pendiente | pendiente | Arranca el contador. Reinicio en frío de Windows OK (reportado por el usuario; verificado en `logs/supervisor.log`): inicio de sesión 08:29:43 → supervisor 08:30:08 → API 08:30:14 → Voice 08:30:26, `/health` en `ok` en los 3 checks, sin líneas ADVERTENCIA/ALERTA. Completar el resto de la fila al cierre del día. |
@@ -24,7 +26,8 @@
 - **2026-09-15 — descartado como día 1.** Se había anotado como día 1, pero del 14 al 20 el usuario casi no usó Aries (equipo apagado la mayoría de esos días). El contador reinició el 2026-09-20.
 - **Muerte del supervisor del 2026-09-15 (05:06, último renglón de esa corrida en `supervisor.log`, sin línea de apagado).** El usuario la atribuyó a una suspensión del equipo. El registro de eventos de Windows no lo respalda: no hay ningún evento de suspensión el 15/09, y esa sesión de Windows (arrancada 04:42 tras un apagado inesperado a las 04:41) terminó con otro apagado inesperado (Kernel-Power 41, registrado al arrancar el 2026-09-16 05:15:59). Consistente con la falla de hardware del equipo, no con un bug de Aries.
 - **2026-09-19 — apagado inesperado del equipo** (arrancó 22:52:54, se cayó enseguida; Kernel-Power 41 registrado al volver a arrancar a las 23:09:07). Fue ~1 hora antes de la primera corrida de Aries de ese día (23:59), así que no hay relación con Aries. El usuario sospecha RAM defectuosa (ya venía con reinicios espontáneos; sacó un módulo y quedó en 8 GB; el problema volvió, ahora como apagado).
-- **Sin probar todavía:** suspensión/reanudación del equipo con Aries corriendo (el equipo sí entra en suspensión solo, ej. 2026-09-20 00:17). Pendiente hasta que el usuario la pruebe (suspender, reanudar, mirar `logs/supervisor.log` y `GET /health`).
+- **Diagnóstico de memoria de Windows (2026-09-20, reportado por el usuario):** 0 bad pages en las 12 pruebas — la RAM está sana. Hipótesis actual del usuario para las caídas: picos de corriente combinados con estar al límite de los 8 GB cuando corre todo junto (WSL2 + Redis + API + Voice); mitigación pendiente: regulador/UPS. Medición de apoyo (2026-09-20, sin Aries corriendo): 6,9 de 7,9 GB en uso y 1,0 GB libre, y no existe `.wslconfig` (WSL2 sin tope de memoria propio, default hasta el 50% de la RAM).
+- **Sin probar todavía:** suspensión/reanudación del equipo con Aries corriendo (el equipo sí entra en suspensión solo, ej. 2026-09-20 00:17). El usuario la dejó pendiente por ahora (suspender, reanudar, mirar `logs/supervisor.log` y `GET /health`).
 
 ## Investigación de los 2 commits inesperados (Tarea 0, 2026-07-24) — archivado
 

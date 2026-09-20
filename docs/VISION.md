@@ -92,6 +92,11 @@ motor se validen contra la realidad y no contra una demo.
   volver a iniciar sesión el stack arranca sin intervención (supervisor +
   Task Scheduler). Se anota igual en `PROGRESS.md` con su nota, pero no
   resetea el contador. Si Aries no vuelve solo, sí es falla grave.
+- **Excepción temporal a lo anterior (desde 2026-09-20):** mientras Task
+  Scheduler siga desregistrado por el problema eléctrico del equipo,
+  arrancar Aries a mano después de una caída del equipo no es falla
+  grave; se anota igual en `PROGRESS.md`. La excepción rige hasta que se
+  consiga un regulador/UPS y se vuelva a registrar la tarea.
 - **(a) Una falla grave resetea el contador a cero.** No se descuenta
   solo el día en que ocurrió — las 2 semanas tienen que ser consecutivas
   y limpias, y vuelven a empezar de cero después de cada falla grave.
