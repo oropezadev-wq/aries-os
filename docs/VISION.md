@@ -87,6 +87,11 @@ motor se validen contra la realidad y no contra una demo.
   responde, una rutina no se dispara, un agente rompe el proceso, Voice
   se cae y no se recupera sola). Un bug cosmético o un mensaje de log
   feo no cuenta como falla grave.
+- **Una caída del equipo por hardware** (apagado o reinicio espontáneo
+  del host) **no cuenta como falla grave si Aries se recupera solo**: al
+  volver a iniciar sesión el stack arranca sin intervención (supervisor +
+  Task Scheduler). Se anota igual en `PROGRESS.md` con su nota, pero no
+  resetea el contador. Si Aries no vuelve solo, sí es falla grave.
 - **(a) Una falla grave resetea el contador a cero.** No se descuenta
   solo el día en que ocurrió — las 2 semanas tienen que ser consecutivas
   y limpias, y vuelven a empezar de cero después de cada falla grave.

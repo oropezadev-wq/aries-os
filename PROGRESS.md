@@ -13,6 +13,8 @@
 
 **Contador vigente: arranca el 2026-09-20 (día 1)**, confirmado por el usuario tras la prueba de reinicio en frío de Windows.
 
+**Regla aclarada el 2026-09-20 (decisión del usuario, ver `docs/VISION.md`):** una caída del equipo por hardware (apagado o reinicio espontáneo) NO resetea el contador si Aries se recupera solo al volver a iniciar sesión, sin intervención. Se anota igual acá, en la fila del día, con su nota.
+
 | Día | Fecha | Voice | Routines | Agentes usados | Falla grave | Notas |
 |---|---|---|---|---|---|---|
 | 1 | 2026-09-20 | pendiente | pendiente | pendiente | pendiente | Arranca el contador. Reinicio en frío de Windows OK (reportado por el usuario; verificado en `logs/supervisor.log`): inicio de sesión 08:29:43 → supervisor 08:30:08 → API 08:30:14 → Voice 08:30:26, `/health` en `ok` en los 3 checks, sin líneas ADVERTENCIA/ALERTA. Completar el resto de la fila al cierre del día. |
