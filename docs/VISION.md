@@ -101,11 +101,13 @@ motor se validen contra la realidad y no contra una demo.
   `PROGRESS.md` como observación y no suman.
 - **El contador arranca (desde el día 1) recién cuando se cumplan todas
   estas condiciones:** (1) se consiguió el regulador/UPS; (2) la tarea de
-  Task Scheduler está registrada de nuevo; (3) la **wake word propia en
-  español está entrenada y funcionando** — no `hey_jarvis`, que con la
-  voz del usuario da scores por debajo de los falsos disparos del
-  ambiente y no se puede separar con ningún umbral (ver `PROGRESS.md`,
-  diagnóstico de Voice del 2026-09-20).
+  Task Scheduler está registrada de nuevo; (3) hay una **wake word que
+  detecte la voz del usuario de forma confiable, con audio de captura
+  verificado como sano** (sin compuerta ni filtrado de Windows). Se
+  define por resultado y no por solución: no se da por cerrado que haga
+  falta un modelo propio hasta descartar que `hey_jarvis` falle por
+  audio degradado (ver `PROGRESS.md`, revisión del diagnóstico de Voice
+  del 2026-09-20).
 - **(a) Una falla grave resetea el contador a cero.** No se descuenta
   solo el día en que ocurrió — las 2 semanas tienen que ser consecutivas
   y limpias, y vuelven a empezar de cero después de cada falla grave.
