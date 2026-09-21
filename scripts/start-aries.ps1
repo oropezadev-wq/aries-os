@@ -52,12 +52,31 @@
     final) pero se salta esa limpieza "prolija". Aceptable para Fase 1 de
     desarrollo; si hace falta un apagado real vía CTRL_BREAK_EVENT más
     adelante, es una mejora aislada a `Stop-ChildProcess` más abajo.
-    Tampoco valida honestamente la salud de Redis/Voice en `GET /health`
-    (sigue devolviendo `{"status": "ok"}` fijo) — señalado como pendiente
-    antes de Fase 2, no bloqueante acá.
+    `GET /health` ya reporta la salud real por dependencia (ver api.py), pero
+    este supervisor solo mira su código HTTP (200 = el proceso sirve): no
+    actúa sobre el `status` del body.
+
+    Ninguna llamada externa del loop puede colgarlo: las de `wsl.exe` corren
+    con tope duro (`-WslTimeoutSeconds`), y una iteración lenta queda logueada
+    (`-SlowIterationSeconds`). Contexto: en la prueba de suspensión/reanudación
+    del 2026-09-20 el supervisor tardó ~30 s en notar el `stop.flag`, sin
+    causa confirmable porque nada medía la duración de cada iteración.
+    Límite conocido que sigue abierto: el backoff de `Restart-Child` (hasta
+    `-MaxBackoffSeconds`) duerme sin mirar el `stop.flag`.
 
 .PARAMETER SupervisionIntervalSeconds
     Cada cuánto el loop revisa los 4 elementos vigilados.
+
+.PARAMETER WslTimeoutSeconds
+    Tope duro de cada llamada a `wsl.exe` del loop (PING a Redis, reinicio de
+    redis-server). Si lo excede, se mata la llamada. Un PING que excede el
+    tope se loguea pero NO reinicia redis-server (puede ser una VM lenta bajo
+    carga); solo una falla definitiva del PING lo reinicia.
+
+.PARAMETER SlowIterationSeconds
+    Si una iteración del loop (sin contar el sleep entre iteraciones) tarda
+    más que esto, se loguea un AVISO con la duración y cuánto fue el chequeo
+    de Redis.
 
 .PARAMETER MaxLogSizeMB
     Tamaño máximo (por archivo out/err) antes de rotar un hijo con un
@@ -89,7 +108,9 @@ param(
     [string]$LogLevel = "INFO",
     [int]$BaseBackoffSeconds = 10,
     [int]$MaxBackoffSeconds = 300,
-    [int]$StableAfterSeconds = 300
+    [int]$StableAfterSeconds = 300,
+    [int]$WslTimeoutSeconds = 10,
+    [double]$SlowIterationSeconds = 10
 )
 
 $ErrorActionPreference = "Stop"
@@ -241,13 +262,59 @@ function Start-VoiceProcess {
 # ---------------------------------------------------------------------
 # 4. Chequeos de salud reales (no sleeps fijos a ciegas)
 # ---------------------------------------------------------------------
-function Test-RedisReady {
-    try {
-        $result = wsl.exe -d $WslDistro -- redis-cli ping 2>$null
-        return ($result -match "PONG")
-    } catch {
-        return $false
+# Ejecuta un ejecutable externo con tope duro de tiempo. Devuelve
+# @{ TimedOut; ExitCode; Output }. Si lo excede, mata el proceso y devuelve
+# TimedOut=$true. Sin esto, una llamada colgada (ej. wsl.exe con la VM lenta o
+# trabada) congelaría TODO el loop: el supervisor seguiría vivo pero sin
+# supervisar nada, y tampoco vería el stop.flag.
+function Invoke-ExternalWithTimeout {
+    param([string]$FilePath, [string[]]$Arguments, [int]$TimeoutSeconds)
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $FilePath
+    $psi.Arguments = ($Arguments | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join ' '
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.RedirectStandardInput = $true
+    $proc = New-Object System.Diagnostics.Process
+    $proc.StartInfo = $psi
+    [void]$proc.Start()
+    # stdin cerrado: un `sudo` que pida contraseña falla en vez de colgarse.
+    $proc.StandardInput.Close()
+    $stdout = $proc.StandardOutput.ReadToEndAsync()
+    [void]$proc.StandardError.ReadToEndAsync()
+    if (-not $proc.WaitForExit($TimeoutSeconds * 1000)) {
+        try { $proc.Kill() } catch {}
+        return [PSCustomObject]@{ TimedOut = $true; ExitCode = $null; Output = "" }
     }
+    # Espera acotada: un proceso hijo que herede el pipe podría impedir el EOF.
+    $output = if ($stdout.Wait(2000)) { $stdout.Result } else { "" }
+    return [PSCustomObject]@{ TimedOut = $false; ExitCode = $proc.ExitCode; Output = $output }
+}
+
+function Invoke-Wsl {
+    param([string[]]$Arguments, [int]$TimeoutSeconds = $WslTimeoutSeconds)
+    Invoke-ExternalWithTimeout -FilePath "wsl.exe" -Arguments (@("-d", $WslDistro, "--") + $Arguments) -TimeoutSeconds $TimeoutSeconds
+}
+
+# 'ok' | 'down' | 'timeout'. Distinguir 'timeout' de 'down' importa: un PING que
+# no contestó a tiempo puede ser una VM lenta bajo carga, y reiniciar
+# redis-server ahí sería una acción nueva y disruptiva que antes, con la
+# llamada bloqueante, nunca ocurría. Solo una falla definitiva reinicia.
+function Get-RedisState {
+    try {
+        $result = Invoke-Wsl -Arguments @("redis-cli", "ping")
+    } catch {
+        return "down"
+    }
+    if ($result.TimedOut) { return "timeout" }
+    if ($result.Output -match "PONG") { return "ok" }
+    return "down"
+}
+
+function Test-RedisReady {
+    return ((Get-RedisState) -eq "ok")
 }
 
 function Test-ApiReady {
@@ -311,6 +378,9 @@ try {
             break
         }
 
+        $iterationTimer = [System.Diagnostics.Stopwatch]::StartNew()
+        $redisSeconds = 0.0
+
         # -- Holder de WSL (y por lo tanto Redis, indirectamente) --
         if (-not (Test-ProcessAlive $Children.WslHolder.Process)) {
             Write-Log "ALERTA: el holder de WSL murió — sin esto Redis se apaga solo en ~8s. Relanzando."
@@ -323,10 +393,18 @@ try {
 
         # -- Redis en sí (el holder puede estar vivo con redis-server
         #    crasheado adentro) --
-        if (-not (Test-RedisReady)) {
+        $redisTimer = [System.Diagnostics.Stopwatch]::StartNew()
+        $redisState = Get-RedisState
+        if ($redisState -eq "down") {
             Write-Log "ALERTA: Redis no responde PING (holder de WSL vivo). Intentando reiniciar el servicio dentro de la distro."
-            wsl.exe -d $WslDistro -- sudo systemctl restart redis-server 2>&1 | Out-Null
+            $restart = Invoke-Wsl -Arguments @("sudo", "systemctl", "restart", "redis-server")
+            if ($restart.TimedOut) {
+                Write-Log "ALERTA: el reinicio de redis-server no terminó en ${WslTimeoutSeconds}s (¿wsl.exe colgado?)."
+            }
+        } elseif ($redisState -eq "timeout") {
+            Write-Log "ALERTA: el PING a Redis no contestó en ${WslTimeoutSeconds}s (¿VM lenta o wsl.exe colgado?) — no se reinicia redis-server solo por un timeout."
         }
+        $redisSeconds = $redisTimer.Elapsed.TotalSeconds
 
         # -- API --
         if (-not (Test-ProcessAlive $Children.Api.Process)) {
@@ -370,6 +448,11 @@ try {
         Get-ChildItem -Path $LogDir -Filter "*.log" -ErrorAction SilentlyContinue |
             Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-$LogRetentionDays) } |
             Remove-Item -Force -ErrorAction SilentlyContinue
+
+        $iterationSeconds = $iterationTimer.Elapsed.TotalSeconds
+        if ($iterationSeconds -gt $SlowIterationSeconds) {
+            Write-Log ("AVISO: iteración lenta del loop de supervisión: {0:N1}s (límite {1}s; chequeo de Redis: {2:N1}s). Un stop.flag puede tardar hasta ese tiempo más el sleep de {3}s en notarse." -f $iterationSeconds, $SlowIterationSeconds, $redisSeconds, $SupervisionIntervalSeconds)
+        }
 
         Start-Sleep -Seconds $SupervisionIntervalSeconds
     }

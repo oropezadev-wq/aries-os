@@ -16,7 +16,14 @@
     supervisor.
 
 .PARAMETER TimeoutSeconds
-    Cuánto esperar el apagado ordenado antes de forzar.
+    Cuánto esperar el apagado ordenado antes de forzar. Default 60 s: el
+    supervisor solo mira el `stop.flag` al inicio de cada iteración, así que
+    el peor caso normal es su sleep (15 s) más una iteración acotada por los
+    timeouts de `wsl.exe` (10 s el PING, 10 s un reinicio de Redis) — unos
+    35 s, más margen. Con el default anterior (30 s) el 2026-09-20 se forzó
+    el cierre de un supervisor que estaba justo terminando su apagado
+    ordenado. Excepción sin acotar: si el supervisor está en el backoff de
+    reinicio de un hijo caído (hasta 300 s), no mira el flag hasta salir.
 
 .EXAMPLE
     .\scripts\stop-aries.ps1
@@ -24,7 +31,7 @@
 
 [CmdletBinding()]
 param(
-    [int]$TimeoutSeconds = 30
+    [int]$TimeoutSeconds = 60
 )
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
