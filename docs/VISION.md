@@ -98,8 +98,14 @@ motor se validen contra la realidad y no contra una demo.
   validar la regla anterior (que Aries se recupera solo), y contar días
   de uso manual dejaría llegar al día 14 sin haber probado nunca el
   arranque desatendido real. Los días de uso manual se anotan en
-  `PROGRESS.md` como observación y no suman. Se reanuda cuando se
-  consiga un regulador/UPS y se vuelva a registrar la tarea.
+  `PROGRESS.md` como observación y no suman.
+- **El contador arranca (desde el día 1) recién cuando se cumplan todas
+  estas condiciones:** (1) se consiguió el regulador/UPS; (2) la tarea de
+  Task Scheduler está registrada de nuevo; (3) la **wake word propia en
+  español está entrenada y funcionando** — no `hey_jarvis`, que con la
+  voz del usuario da scores por debajo de los falsos disparos del
+  ambiente y no se puede separar con ningún umbral (ver `PROGRESS.md`,
+  diagnóstico de Voice del 2026-09-20).
 - **(a) Una falla grave resetea el contador a cero.** No se descuenta
   solo el día en que ocurrió — las 2 semanas tienen que ser consecutivas
   y limpias, y vuelven a empezar de cero después de cada falla grave.
