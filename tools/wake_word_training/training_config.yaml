@@ -1,4 +1,4 @@
-# Config de entrenamiento para openwakeword/train.py — modelo "Hola Aries".
+# Config de entrenamiento para openwakeword/train.py — modelo "Oye Aries".
 #
 # BORRADOR NO VALIDADO — armado leyendo el código fuente de
 # `openwakeword/train.py` (instalado en `.venv-313`), no corrido todavía
@@ -20,11 +20,11 @@
 # --generate_clips — ver nota técnica en el spec.
 piper_sample_generator_path: "./piper-sample-generator"
 
-model_name: "hola_aries"
+model_name: "oye_aries"
 output_dir: "./output"
 
 target_phrase:
-  - "hola aries"
+  - "oye aries"
 
 # Directorios con archivos de audio reales (WAV) para RIR/ruido de fondo,
 # usados para augmentar las grabaciones positivas — NO son TTS, son

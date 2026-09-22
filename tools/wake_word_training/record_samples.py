@@ -61,7 +61,7 @@ def _record_one_take(listener: MicrophoneListener, max_seconds: float) -> tuple[
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--phrase", default="Hola Aries", help="Frase a grabar (solo para el prompt en pantalla)")
+    parser.add_argument("--phrase", default="Oye Aries", help="Frase a grabar (solo para el prompt en pantalla)")
     parser.add_argument("--count", type=int, default=200, help="Cantidad total de tomas a grabar")
     parser.add_argument(
         "--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR, help="Carpeta destino (se crean positive_train/positive_test adentro)"

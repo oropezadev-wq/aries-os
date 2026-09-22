@@ -22,7 +22,7 @@
 > en inglés), pero ya no es la solución a este bug puntual** — queda como
 > mejora de producto a evaluar, no como fix urgente.
 
-## Decisión 1: frase — "Hola Aries"
+## Decisión 1: frase — "Oye Aries"
 
 Se evaluaron dos opciones:
 
@@ -32,10 +32,22 @@ Se evaluaron dos opciones:
   las wake words pre-entrenadas de openWakeWord (`hey_jarvis`,
   `hey_mycroft`) ni la mayoría de asistentes comerciales (`ok_google`,
   `hey_siri`) — todas usan un prefijo de activación además del nombre.
-- **"Hola Aries"** (elegida) — sigue ese mismo patrón "prefijo + nombre",
-  da al clasificador más contenido fonético distintivo (4-5 sílabas vs. 2-3)
-  para diferenciar de habla casual, a costa de tardar un poco más en
-  decirse. Confirmado por el usuario.
+- **"Hola Aries"** (elegida originalmente) — sigue ese mismo patrón
+  "prefijo + nombre", da al clasificador más contenido fonético distintivo
+  frente a habla casual, a costa de tardar un poco más en decirse.
+  Confirmado por el usuario.
+
+**Revisión (2026-09-21):** tras descartar `hey_jarvis` como wake word
+pre-entrenada (reconocía mal la pronunciación/acento del usuario incluso
+con audio verificado sano — ver `PROGRESS.md`, "Revisión del diagnóstico
+de Voice"), el usuario decidió entrenar un modelo propio en vez de seguir
+ajustando `hey_jarvis`. En ese momento reconsideró también la frase:
+**"Oye Aries"** (elegida) en vez de "Hola Aries" — mismo patrón
+"prefijo + nombre", pero una frase que el usuario prefiere por ser más
+personalizada y coherente con el nombre del proyecto. Las 30 tomas
+grabadas en 2026-09-11 de "Hola Aries" ya estaban descartadas por audio
+degradado (`tools/wake_word_training/dataset/_descartado_2026-09-11_audio_degradado/`),
+así que el cambio de frase no pierde ningún dato utilizable.
 
 ## Decisión 2: origen de las muestras positivas — grabación real, no TTS sintético
 
@@ -119,10 +131,10 @@ runtime): `torch`, `torchinfo`, `torchmetrics`, `pyyaml`.
 
 ## Decisión 4: integración del modelo final — sin tocar el contrato
 
-Una vez entrenado `hola_aries.onnx`:
+Una vez entrenado `oye_aries.onnx`:
 
 1. El `.onnx` resultante se guarda en el repo (ubicación a definir al
-   llegar a este paso — candidato: `models/wakeword/hola_aries.onnx`, en
+   llegar a este paso — candidato: `models/wakeword/oye_aries.onnx`, en
    paralelo a cómo ya se maneja el modelo de voz de Piper).
 2. `Settings.voice_wake_word_model` (`src/aries/config/settings.py`)
    cambia su default de `"hey_jarvis"` a la ruta del nuevo modelo —
@@ -144,7 +156,7 @@ no lógica nueva. Ningún test existente debería romperse.
 
 ## Estado
 
-- [x] Frase decidida: "Hola Aries"
+- [x] Frase decidida: "Oye Aries" (originalmente "Hola Aries", revisada 2026-09-21)
 - [x] Fuente de datos decidida: grabación real
 - [x] Cómputo decidido: local/CPU
 - [x] `pyproject.toml`: extra `voice-training` agregado
