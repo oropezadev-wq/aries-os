@@ -65,11 +65,24 @@ layer_size: 32
 # Sin negativos adversariales sintéticos (ver nota arriba), así que no hay
 # key "adversarial_negative" acá — run_training.py arma feature_data_files
 # solo con "positive" + lo que esté en feature_data_files.
-# Valores chicos a propósito para la corrida de prueba con 27 positivas
-# reales — subir bastante (varios cientos) cuando haya ~100-120 grabaciones.
+#
+# Ajustado 2026-09-21 (101 tomas reales: 90 train / 11 test). Con
+# augmentation_rounds=2, positive_features_train.npy termina con
+# 90*2=180 filas — NO "varios cientos" como decía la nota vieja de este
+# comentario (escrita antes de leer `openwakeword.data.
+# mmap_batch_generator`): ese generador recorre cada array de forma
+# SECUENCIAL, no aleatoria, y solo reinicia al índice 0 al *empezar* un
+# batch si ya se pasó del final — si `n_per_class` fuera mayor que el
+# total de filas (ej. "varios cientos" sobre un array de 180), cada
+# batch devolvería como mucho lo que quede antes del corte (nunca las
+# "varios cientos" pedidas), con tamaño de batch inconsistente entre
+# pasos. Se mantiene la proporción original positiva:negativo (1:8) y se
+# escala el numerador a 32 (bien por debajo de las 180 filas
+# disponibles, para no pisar el borde del array en cada vuelta) — subir
+# de nuevo cuando el dataset real crezca más allá de ~300-400 tomas.
 batch_n_per_class:
-  positive: 8
-  ACAV100M: 64
+  positive: 32
+  ACAV100M: 256
 
 # steps=10000 es el valor real de producción — para una corrida de humo
 # rápida (validar que el pipeline no rompe, no un modelo usable) pasar
