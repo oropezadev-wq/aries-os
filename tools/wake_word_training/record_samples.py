@@ -17,13 +17,27 @@ Guarda los `.wav` en `<output-dir>/positive_train/` y
 — mismo esquema de nombres que usa `openwakeword/train.py` para las
 muestras sintéticas, así el resto del pipeline de entrenamiento no
 distingue origen sintético de grabado real.
+
+Cada corrida (una "sesión" — una sentada real frente al micrófono) se
+registra como una línea en `<output-dir>/sessions.jsonl` (started_at UTC,
+frase, y los archivos grabados en esa corrida). Pedido del supervisor
+(2026-09-21, ver docs/specs/WakeWordTraining.spec.md): sin esto, separar el
+dataset "por sesión" en vez de por toma al azar dependía de inferir
+sesiones a partir de la fecha de modificación de los archivos — funciona,
+pero es un método débil (dos corridas separadas por una pausa corta
+todavía se ven como sesiones distintas, sin poder distinguir eso de una
+sesión real en otro día/estado de voz). El manifiesto da una fuente de
+verdad explícita para congelar sesiones completas como set de evaluación
+más adelante.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -38,6 +52,19 @@ from aries.voice.audio_io import (  # noqa: E402
 
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent / "dataset"
 TEST_SPLIT_RATIO = 0.1  # ~1 de cada 10 tomas va a positive_test, no a positive_train
+
+
+def _append_session_manifest(output_dir: Path, phrase: str, started_at: str, files: list[str]) -> None:
+    if not files:
+        return
+    entry = {
+        "started_at": started_at,
+        "ended_at": datetime.now(timezone.utc).isoformat(),
+        "phrase": phrase,
+        "files": files,  # rutas relativas a output_dir, ej. "positive_train/<uuid>.wav"
+    }
+    with (output_dir / "sessions.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
 def _rms(pcm: bytes) -> float:
@@ -90,6 +117,9 @@ def main() -> None:
     print(f"Frase: \"{args.phrase}\" — faltan {remaining} tomas.")
     print("Enter para grabar cada toma (graba hasta ~0.6s de silencio o hasta el máximo). Ctrl+C para cortar en cualquier momento.\n")
 
+    session_started_at = datetime.now(timezone.utc).isoformat()
+    session_files: list[str] = []
+
     recorded = 0
     try:
         while recorded < remaining:
@@ -105,12 +135,15 @@ def main() -> None:
             destination = test_dir if (n_existing + recorded) % int(1 / TEST_SPLIT_RATIO) == 0 else train_dir
             file_path = destination / f"{uuid.uuid4().hex}.wav"
             file_path.write_bytes(wav_bytes)
+            session_files.append(f"{destination.name}/{file_path.name}")
             recorded += 1
             print(f"  Guardada en {destination.name}/ (RMS={rms:.0f})")
     except KeyboardInterrupt:
+        _append_session_manifest(args.output_dir, args.phrase, session_started_at, session_files)
         print(f"\nCortado por el usuario. Grabadas {recorded} tomas nuevas ({n_existing + recorded} en total).")
         return
 
+    _append_session_manifest(args.output_dir, args.phrase, session_started_at, session_files)
     print(f"\nListo: {n_existing + recorded} tomas totales en {args.output_dir}.")
 
 
