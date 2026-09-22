@@ -12,13 +12,15 @@
 #
 # DELIBERADAMENTE no se usa `--generate_clips`: las muestras positivas son
 # grabaciones reales (tools/wake_word_training/record_samples.py), no TTS
-# sintético — ver Decisión 2 del spec. Esto también significa que no se
-# generan "negative clips adversariales" (frases parecidas sintetizadas
-# con Piper, un mecanismo opcional de hardening que también depende de
-# `piper_sample_generator_path` y por lo tanto del mismo problema de
-# inglés-only) — el negativo real viene 100% de `feature_data_files`
-# (features precomputadas de ACAV100M) más `background_paths` (para
-# augmentar las positivas con ruido/reverb).
+# sintético — ver Decisión 2 del spec. Esto también significa que no hay
+# "negative clips adversariales" generados con Piper (mecanismo opcional
+# de hardening de train.py que también depende de
+# `piper_sample_generator_path`, mismo problema de inglés-only). En su
+# lugar, desde 2026-09-22 hay negativos difíciles REALES grabados
+# (`hard_negatives_dir` abajo, `record_hard_negatives.py`, Decisión 5 del
+# spec: "oye" + otra palabra, "aries" sola) — el negativo total viene de
+# `feature_data_files` (ACAV100M) + `hard_negatives_dir` + `background_paths`
+# (para augmentar las positivas con ruido/reverb).
 
 # Import incondicional en train.py (línea 638) aunque no se use
 # --generate_clips — ver nota técnica en el spec.
@@ -48,6 +50,19 @@ background_paths_duplication_rate: [1]
 feature_data_files:
   ACAV100M: "./negative_data/openwakeword_features_ACAV100M_2000_hrs_16bit.npy"
 
+# Negativos difíciles reales (Decisión 5 del spec, punto 4 del
+# supervisor): "oye mira"/"oye tu"/"oye ya"/"aries" sueltos, grabados con
+# record_hard_negatives.py. A diferencia de ACAV100M (un .npy estático ya
+# calculado), acá se apunta al directorio de WAVs crudos —
+# run_training.py extrae las features en el momento (misma augmentación
+# que las positivas: RIR + background_paths), con el mismo total_length
+# que las positivas, y las suma a feature_data_files como una fuente más.
+# Si el directorio no existe o está vacío, run_training.py sigue
+# corriendo igual (con un aviso) — no bloquea, pero el modelo pierde la
+# única señal explícita contra el atajo de dispararse con "oye"/"aries"
+# sueltos.
+hard_negatives_dir: "./dataset/hard_negatives"
+
 false_positive_validation_data_path: "./negative_data/validation_set_features.npy"
 
 # Augmentación (RIR + ruido) sobre las grabaciones reales de
@@ -62,27 +77,32 @@ augmentation_batch_size: 16
 model_type: "dnn"
 layer_size: 32
 
-# Sin negativos adversariales sintéticos (ver nota arriba), así que no hay
-# key "adversarial_negative" acá — run_training.py arma feature_data_files
-# solo con "positive" + lo que esté en feature_data_files.
+# run_training.py arma feature_data_files con "positive" + lo que esté en
+# feature_data_files + hard_negatives_dir (si tiene archivos) — n_per_class
+# se filtra automáticamente a las keys que terminen existiendo (ver
+# `main()`), así que sobra dejar acá una key para una fuente que no está.
 #
-# Ajustado 2026-09-21 (101 tomas reales: 90 train / 11 test). Con
-# augmentation_rounds=2, positive_features_train.npy termina con
-# 90*2=180 filas — NO "varios cientos" como decía la nota vieja de este
-# comentario (escrita antes de leer `openwakeword.data.
-# mmap_batch_generator`): ese generador recorre cada array de forma
-# SECUENCIAL, no aleatoria, y solo reinicia al índice 0 al *empezar* un
-# batch si ya se pasó del final — si `n_per_class` fuera mayor que el
-# total de filas (ej. "varios cientos" sobre un array de 180), cada
-# batch devolvería como mucho lo que quede antes del corte (nunca las
-# "varios cientos" pedidas), con tamaño de batch inconsistente entre
-# pasos. Se mantiene la proporción original positiva:negativo (1:8) y se
-# escala el numerador a 32 (bien por debajo de las 180 filas
-# disponibles, para no pisar el borde del array en cada vuelta) — subir
-# de nuevo cuando el dataset real crezca más allá de ~300-400 tomas.
+# Ajustado 2026-09-21, recalculado 2026-09-22 tras congelar 30 tomas en
+# dataset/eval_frozen/ (Decisión 5 del spec, punto 1 del supervisor):
+# positive_train quedó en 63 archivos (no 90) → con augmentation_rounds=2,
+# positive_features_train.npy tiene 63*2=126 filas, no 180. El motivo de
+# NO usar "varios cientos" sigue siendo el mismo (`mmap_batch_generator`
+# recorre cada array de forma SECUENCIAL, no aleatoria, y no maneja
+# wraparound dentro de un mismo batch — pedir más filas de las que hay da
+# tamaño de batch inconsistente entre pasos), así que se deja positive=32
+# sin tocar (bien por debajo de las 126 filas disponibles).
+#
+# hard_negatives: 80 tomas reales (20 por frase × 4 frases,
+# record_hard_negatives.py) → 80*2=160 filas aumentadas. Mismo criterio
+# que positive: se iguala a 32 (no proporcional a ACAV100M) para que la
+# contribución de "oye"/"aries" sueltos en cada batch sea comparable a la
+# de la frase completa, en vez de diluirse entre las 256 negativas
+# genéricas de ACAV100M — el punto de estos negativos es enseñar una
+# distinción específica, no aportar volumen.
 batch_n_per_class:
   positive: 32
   ACAV100M: 256
+  hard_negatives: 32
 
 # steps=10000 es el valor real de producción — para una corrida de humo
 # rápida (validar que el pipeline no rompe, no un modelo usable) pasar

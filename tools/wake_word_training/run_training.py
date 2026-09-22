@@ -254,6 +254,52 @@ def _make_features(
     return positive_features_train, positive_features_test, total_length
 
 
+def _make_hard_negative_features(
+    wav_files: list[Path],
+    total_length: int,
+    rir_paths: list[str],
+    background_paths: list[str],
+    config: dict,
+    model_dir: Path,
+    overwrite: bool,
+) -> Path:
+    """Extrae features de los negativos difíciles (record_hard_negatives.py:
+    "oye" + otra palabra, "aries" sola — ver Decisión 5 del spec) con el
+    mismo `total_length` que las positivas, así el resultado ya tiene
+    `input_shape[0]` frames por ejemplo sin necesitar el reshape que sí
+    hace falta para una fuente ajena como ACAV100M (ver
+    `_reshape_to_input_shape` en `main()`). Sin split train/test — todos
+    los clips van a una sola bolsa de negativos (no se usan para la
+    validación interna de `auto_train`, solo para el batch de
+    entrenamiento, igual que ACAV100M)."""
+    output_file = model_dir / "hard_negatives_features.npy"
+    if not overwrite and output_file.exists():
+        logger.info("Features de negativos difíciles ya existen en disco, se reusan (--overwrite-features para recalcular)")
+        return output_file
+
+    rounds = config.get("augmentation_rounds", 1)
+    clips = [str(p) for p in wav_files] * rounds
+    n_cpus = max(1, (os.cpu_count() or 1) // 2)
+
+    logger.info("Augmentando + extrayendo features de %d clips de negativos difíciles...", len(clips))
+    gen = augment_clips(
+        clips,
+        total_length=total_length,
+        batch_size=config["augmentation_batch_size"],
+        background_clip_paths=background_paths,
+        RIR_paths=rir_paths,
+    )
+    compute_features_from_generator(
+        gen,
+        n_total=len(clips),
+        clip_duration=total_length,
+        output_file=str(output_file),
+        device="cpu",
+        ncpu=n_cpus,
+    )
+    return output_file
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, default=HERE / "training_config.yaml")
@@ -295,6 +341,21 @@ def main() -> None:
         positive_train_dir, positive_test_dir, rir_paths, background_paths, config, model_dir, args.overwrite_features
     )
 
+    hard_negatives_dir = HERE / config.get("hard_negatives_dir", "dataset/hard_negatives")
+    hard_negative_files = list(hard_negatives_dir.glob("*/*.wav")) if hard_negatives_dir.exists() else []
+    hard_negatives_features: Path | None = None
+    if hard_negative_files:
+        logger.info("Negativos difíciles: %d archivos en %s", len(hard_negative_files), hard_negatives_dir)
+        hard_negatives_features = _make_hard_negative_features(
+            hard_negative_files, total_length, rir_paths, background_paths, config, model_dir, args.overwrite_features
+        )
+    else:
+        logger.warning(
+            "Sin negativos difíciles (%s vacío o no existe) — el modelo no tiene ninguna señal explícita para "
+            "distinguir la frase completa de 'oye'/'aries' sueltos (ver record_hard_negatives.py, Decisión 5 del spec).",
+            hard_negatives_dir,
+        )
+
     # --- Entrenamiento ---
     F = AudioFeatures(device="cpu")
     # OJO: `total_length` (en muestras) no siempre es múltiplo exacto de
@@ -325,6 +386,8 @@ def main() -> None:
         return x
 
     negative_sources = {name: str((HERE / rel).resolve()) for name, rel in config["feature_data_files"].items()}
+    if hard_negatives_features is not None:
+        negative_sources["hard_negatives"] = str(hard_negatives_features.resolve())
     feature_data_files = dict(negative_sources)
     feature_data_files["positive"] = str(positive_features_train.resolve())
 
