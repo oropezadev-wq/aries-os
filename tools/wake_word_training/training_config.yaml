@@ -1,10 +1,14 @@
 # Config de entrenamiento para openwakeword/train.py — modelo "Oye Aries".
 #
-# BORRADOR NO VALIDADO — armado leyendo el código fuente de
-# `openwakeword/train.py` (instalado en `.venv-313`), no corrido todavía
-# de punta a punta (falta: dataset de negativos terminando de descargar,
-# extra `voice-training` instalándose, y las grabaciones reales del
-# usuario). Ver docs/specs/WakeWordTraining.spec.md.
+# Validado de punta a punta una vez (run_training.py, commit 64577a8,
+# 2026-09-13) con 27 tomas reales de la frase de entonces ("Hola Aries",
+# descartadas después por audio degradado — la frase actual es "Oye
+# Aries", ver docs/specs/WakeWordTraining.spec.md). Esa corrida confirmó
+# que el mecanismo del pipeline funciona (el .onnx exportado carga y predice
+# con openwakeword.model.Model), no que el modelo en sí sirva — muy
+# pocas muestras. batch_n_per_class más abajo sigue en valores chicos
+# heredados de esa corrida de prueba; subir cuando haya ~100-120
+# grabaciones reales de "Oye Aries".
 #
 # DELIBERADAMENTE no se usa `--generate_clips`: las muestras positivas son
 # grabaciones reales (tools/wake_word_training/record_samples.py), no TTS

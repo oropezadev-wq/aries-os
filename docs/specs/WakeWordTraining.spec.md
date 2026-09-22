@@ -161,21 +161,47 @@ no lógica nueva. Ningún test existente debería romperse.
 - [x] Cómputo decidido: local/CPU
 - [x] `pyproject.toml`: extra `voice-training` agregado
 - [x] `tools/wake_word_training/record_samples.py`: script de grabación
-- [ ] Grabar 150-300 tomas reales (usuario, en curso)
-- [ ] Descargar datasets de negativos precomputados
-- [ ] Armar config YAML de entrenamiento (`piper_sample_generator_path`
-      apunta a un clone vacío/no usado solo para satisfacer el import
-      incondicional de `train.py` línea 638-639, ver nota abajo)
-- [ ] Entrenar, evaluar recall/falsos-positivos, ajustar threshold
+- [ ] Grabar 150-300 tomas reales (usuario, en curso — 30/200 grabadas
+      2026-09-21, frase "Oye Aries")
+- [x] Descargar datasets de negativos precomputados — parcial: ACAV100M
+      (features, 17GB) + MIT RIR survey (270 archivos) + validation set ya
+      descargados (`tools/wake_word_training/negative_data/`, previo a
+      esta revisión). **Falta `background_noise/`** (vacío) — necesita
+      AudioSet (`agkphysics/AudioSet` en HuggingFace, un shard `.tar` vía
+      descarga directa) y FMA (`rudraml/fma` vía la librería `datasets`,
+      **dependencia nueva no instalada, pendiente de aprobación** — no
+      bloquea entrenar: `run_training.py` corre sin `background_paths`,
+      solo avisa por log que la augmentación aplica reverb pero no mezcla
+      ruido/música).
+- [x] Armar config YAML de entrenamiento — hecho
+      (`tools/wake_word_training/training_config.yaml`); el punto de
+      `piper_sample_generator_path` está resuelto (ver nota técnica
+      actualizada abajo), no por el config sino por cómo lo invoca
+      `run_training.py`.
+- [ ] Entrenar, evaluar recall/falsos-positivos, ajustar threshold —
+      mecanismo del pipeline ya validado end-to-end (`run_training.py`,
+      commit `64577a8`, 2026-09-13) con las 27 tomas viejas de "Hola
+      Aries" (descartadas después por audio degradado) — confirma que
+      `augment_clips` → extracción de features → `auto_train` → export a
+      `.onnx` corre y el modelo resultante carga con
+      `openwakeword.model.Model`. **No** confirma que el modelo en sí
+      sirva (muy pocas muestras, y esas muestras después se descartaron) —
+      falta correr con las 150-300 tomas reales de "Oye Aries" y evaluar
+      de verdad recall/falsos-positivos.
 - [ ] Integrar `.onnx` final (Decisión 4)
 
-**Nota técnica pendiente de resolver al armar el config:** `train.py`
-importa `generate_samples` desde `piper_sample_generator_path`
-incondicionalmente al arrancar (línea 638-639), incluso si no se usa el
-flag `--generate_clips` — hace falta clonar `piper-sample-generator` igual
-(sin descargar su checkpoint en inglés) solo para que el import no falle,
-o parchear esa importación para hacerla condicional al flag. Se decide al
-llegar a esa etapa, no bloquea la grabación de muestras.
+**Nota técnica resuelta:** `train.py` (el script oficial de
+`openwakeword`) importa `generate_samples` desde
+`piper_sample_generator_path` incondicionalmente al arrancar (línea
+638-639), incluso sin `--generate_clips`. En vez de parchear esa
+importación, `tools/wake_word_training/run_training.py` evita el problema
+de raíz: importa `openwakeword.train` como módulo (nunca ejecuta su
+bloque `__main__`, que es donde vive ese import) y llama directo a las
+piezas necesarias (`augment_clips`, `compute_features_from_generator`,
+`Model.auto_train`) — ver el docstring de ese script para el detalle
+completo. `piper_sample_generator_path` en el YAML apunta a un clone
+vacío de `piper-sample-generator` (sin su checkpoint en inglés) que ya
+existe en el repo — no hace falta tocarlo.
 
 ## Referencias
 - `docs/specs/Voice.spec.md` sección 3 (decisión 1: `hey_jarvis` como
