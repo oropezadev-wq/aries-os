@@ -21,7 +21,19 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import sys
 from pathlib import Path
+
+# Shim: la consola de Windows usa cp1252 por default, no UTF-8. El logging
+# interno de `torch.onnx` (versión nueva, exporter basado en
+# `torch.export`) imprime un check "✅" al terminar de capturar el grafo
+# del modelo (`torch/onnx/_internal/exporter/_capture_strategies.py`) — sin
+# esto, `export_model()` revienta con UnicodeEncodeError después de haber
+# entrenado bien, tirando el resultado entero por un problema de consola,
+# no de lógica.
+if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 import numpy as np
 import scipy.io.wavfile
@@ -69,6 +81,38 @@ def _wav_load_shim(path, *_args, **_kwargs):
 
 
 torchaudio.load = _wav_load_shim
+
+
+# Shim: mismo problema que `torchaudio.load` arriba, pero para
+# `torchaudio.info` — no existe en esta versión de torchaudio (removido
+# junto con sus backends propios a favor de TorchCodec/FFmpeg). Recién se
+# detectó al correr con `background_paths` no vacío por primera vez (antes
+# de 2026-09-21 esa carpeta estaba vacía, así que `augment_clips` tomaba la
+# rama sin `AddBackgroundNoise` y este código nunca se ejecutaba — ver
+# `openwakeword.data.augment_clips`). `torch_audiomentations`
+# (`AddBackgroundNoise.random_background`) llama a `torchaudio.info()` para
+# saber cuántas muestras tiene cada clip de ruido antes de mezclarlo, sin
+# cargar el audio completo. Nuestros WAVs de fondo son PCM plano simple
+# (los escribió `download_negatives.py` con `scipy.io.wavfile`), así que
+# alcanza con el módulo `wave` de la librería estándar para leer el
+# header — más liviano que decodificar el archivo entero solo para esto.
+import wave as _wave_module  # noqa: E402
+
+
+class _AudioMetadataShim:
+    __slots__ = ("sample_rate", "num_frames")
+
+    def __init__(self, sample_rate: int, num_frames: int) -> None:
+        self.sample_rate = sample_rate
+        self.num_frames = num_frames
+
+
+def _torchaudio_info_shim(path, *_args, **_kwargs):
+    with _wave_module.open(str(path), "rb") as wf:
+        return _AudioMetadataShim(sample_rate=wf.getframerate(), num_frames=wf.getnframes())
+
+
+torchaudio.info = _torchaudio_info_shim
 
 import gc  # noqa: E402
 
