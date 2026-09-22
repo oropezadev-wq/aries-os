@@ -154,6 +154,61 @@ Una vez entrenado `oye_aries.onnx`:
 configuración (qué modelo/threshold se le pasa a `OpenWakeWordProvider`),
 no lógica nueva. Ningún test existente debería romperse.
 
+## Decisión 5: metodología de evaluación (pedido del supervisor, 2026-09-21)
+
+Después de la primera corrida de entrenamiento de prueba (101 tomas reales,
+ver `PROGRESS.md`), el supervisor del usuario marcó 4 puntos a resolver
+antes de seguir grabando positivas — comparar scores crudos entre `hey_jarvis`
+y un modelo nuevo, sobre datos que el modelo ya vio (aumentados) durante su
+propio entrenamiento, no es una metodología de evaluación válida:
+
+1. **Congelar un set de evaluación separado por sesión, no por toma al
+   azar** — para que corridas futuras del modelo sean comparables entre sí
+   de forma justa (el mismo set, nunca tocado por entrenamiento).
+2. **Definir una métrica clara antes de seguir**: falsos rechazos sobre el
+   set de evaluación congelado, a una tasa fija de falsas activaciones por
+   hora — no comparar scores crudos entre modelos.
+3. **Medir falsas activaciones en el ambiente real del usuario** (1-2 horas
+   de audio de TV/videos de fondo grabado con su micrófono) antes de
+   confiar en cualquier modelo.
+4. **Grabar negativos difíciles**: decenas de tomas reales diciendo "oye" +
+   otra palabra ("oye mira", "oye tu", "oye ya") y "aries" sola — para que
+   el clasificador no aprenda el atajo de dispararse con una sola de las
+   dos palabras de la wake word en vez de la frase completa.
+
+**Resuelto (2026-09-21), puntos 1 y 4** (los que más cambian qué grabar
+después, a pedido del usuario):
+
+- `tools/wake_word_training/record_hard_negatives.py` — script nuevo,
+  graba las 4 frases del punto 4. Sin split train/test (van a sumarse como
+  fuente de negativos en `feature_data_files`, no como clase positiva) —
+  cablearlas en `training_config.yaml` queda pendiente hasta que haya
+  grabaciones reales, no tiene sentido apuntar a un directorio vacío.
+- `tools/wake_word_training/record_samples.py` — ahora registra cada
+  corrida como una sesión en `dataset/sessions.jsonl` (fuente de verdad
+  explícita hacia adelante, en vez de inferir sesiones por fecha de
+  modificación de archivo).
+- `dataset/eval_frozen/` — 30 tomas reales movidas afuera de
+  `positive_train`/`positive_test` (quedan 71 para entrenar), con
+  `MANIFEST.json` documentando el motivo. **Salvedad real, no cosmética:**
+  las dos "sesiones" detectadas en las 101 tomas originales son ambas del
+  2026-09-21, separadas por ~35 minutos (mismo cuarto/mic/estado de voz) —
+  no es una sesión genuinamente distinta (otro día/momento), que es lo que
+  pide el punto 1 en espíritu. Se congeló igual como punto de partida
+  (decisión del usuario) — el pool de evaluación puede crecer con sesiones
+  futuras realmente distintas sin perder esto. `run_training.py` nunca lee
+  de `dataset/eval_frozen/` (solo de `positive_train`/`positive_test`), así
+  que queda protegido de entrenamiento por construcción, no por disciplina.
+
+**Pendiente, puntos 2 y 3** (siguiente iteración, no bloquean seguir
+grabando):
+
+- Punto 2: script de evaluación que calcule falsos rechazos sobre
+  `dataset/eval_frozen/` a una tasa fija de falsas activaciones/hora (en
+  vez de comparar scores crudos como se hizo en la corrida de prueba).
+- Punto 3: grabar 1-2 horas de audio ambiente real (TV/videos de fondo)
+  para medir falsas activaciones fuera del laboratorio.
+
 ## Estado
 
 - [x] Frase decidida: "Oye Aries" (originalmente "Hola Aries", revisada 2026-09-21)
@@ -161,8 +216,17 @@ no lógica nueva. Ningún test existente debería romperse.
 - [x] Cómputo decidido: local/CPU
 - [x] `pyproject.toml`: extra `voice-training` agregado
 - [x] `tools/wake_word_training/record_samples.py`: script de grabación
-- [ ] Grabar 150-300 tomas reales (usuario, en curso — 30/200 grabadas
-      2026-09-21, frase "Oye Aries")
+- [ ] Grabar 150-300 tomas reales (usuario, en curso — 101/200 grabadas
+      2026-09-21, frase "Oye Aries"; 30 de esas 101 congeladas en
+      `dataset/eval_frozen/`, ver Decisión 5 — quedan 71 en
+      `positive_train`/`positive_test` para entrenar)
+- [x] Set de evaluación congelado (Decisión 5, punto 1 del supervisor)
+- [x] Script de negativos difíciles (Decisión 5, punto 4 del supervisor) —
+      `record_hard_negatives.py`, sin grabaciones todavía
+- [ ] Métrica de evaluación real: falsos rechazos a tasa fija de falsas
+      activaciones/hora (Decisión 5, punto 2 del supervisor)
+- [ ] Medir falsas activaciones en ambiente real, 1-2h de audio de fondo
+      (Decisión 5, punto 3 del supervisor)
 - [x] Descargar datasets de negativos precomputados — completo: ACAV100M
       (features, 17GB) + MIT RIR survey (270 archivos) + validation set
       (previo a esta revisión), más `background_noise/` (363 clips de
