@@ -163,16 +163,17 @@ no lógica nueva. Ningún test existente debería romperse.
 - [x] `tools/wake_word_training/record_samples.py`: script de grabación
 - [ ] Grabar 150-300 tomas reales (usuario, en curso — 30/200 grabadas
       2026-09-21, frase "Oye Aries")
-- [x] Descargar datasets de negativos precomputados — parcial: ACAV100M
-      (features, 17GB) + MIT RIR survey (270 archivos) + validation set ya
-      descargados (`tools/wake_word_training/negative_data/`, previo a
-      esta revisión). **Falta `background_noise/`** (vacío) — necesita
-      AudioSet (`agkphysics/AudioSet` en HuggingFace, un shard `.tar` vía
-      descarga directa) y FMA (`rudraml/fma` vía la librería `datasets`,
-      **dependencia nueva no instalada, pendiente de aprobación** — no
-      bloquea entrenar: `run_training.py` corre sin `background_paths`,
-      solo avisa por log que la augmentación aplica reverb pero no mezcla
-      ruido/música).
+- [x] Descargar datasets de negativos precomputados — completo: ACAV100M
+      (features, 17GB) + MIT RIR survey (270 archivos) + validation set
+      (previo a esta revisión), más `background_noise/` (363 clips de
+      AudioSet, ~60 min, `tools/wake_word_training/download_negatives.py`,
+      2026-09-21). Solo AudioSet — se evaluó sumar FMA (segunda fuente que
+      usa el notebook oficial de openWakeWord) pero `rudraml/fma` expone
+      los datos vía un script de carga que la versión instalada de
+      `datasets` (5.x) ya no soporta ("Dataset scripts are no longer
+      supported"); se documenta como limitación conocida, no bloqueante
+      (AudioSet solo ya cubre razonablemente la variedad necesaria) — se
+      puede retomar más adelante si hiciera falta más variedad de ruido.
 - [x] Armar config YAML de entrenamiento — hecho
       (`tools/wake_word_training/training_config.yaml`); el punto de
       `piper_sample_generator_path` está resuelto (ver nota técnica
