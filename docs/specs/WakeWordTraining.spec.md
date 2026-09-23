@@ -200,14 +200,30 @@ después, a pedido del usuario):
   de `dataset/eval_frozen/` (solo de `positive_train`/`positive_test`), así
   que queda protegido de entrenamiento por construcción, no por disciplina.
 
-**Pendiente, puntos 2 y 3** (siguiente iteración, no bloquean seguir
-grabando):
+**Resuelto (2026-09-22), puntos 2, 3 y 4:**
 
-- Punto 2: script de evaluación que calcule falsos rechazos sobre
-  `dataset/eval_frozen/` a una tasa fija de falsas activaciones/hora (en
-  vez de comparar scores crudos como se hizo en la corrida de prueba).
-- Punto 3: grabar 1-2 horas de audio ambiente real (TV/videos de fondo)
-  para medir falsas activaciones fuera del laboratorio.
+- Punto 4: 80 tomas reales grabadas ("oye mira"/"oye tu"/"oye ya"/"aries"
+  sola, 20 c/u) y cableadas en `run_training.py`/`training_config.yaml`
+  como fuente de negativos (`feature_data_files.hard_negatives`).
+- Punto 3: 90 min de audio ambiente real grabados
+  (`record_ambient_audio.py`, `dataset/ambient_audio/`).
+- Punto 2: `tools/wake_word_training/evaluate_model.py` — calcula falsos
+  rechazos sobre `dataset/eval_frozen/` a una tasa fija de falsas
+  activaciones/hora medida en `dataset/ambient_audio/` (streaming continuo
+  frame por frame, no scores crudos).
+
+**Resultado de la primera corrida con la metodología completa
+(2026-09-22) — no positivo, ver `PROGRESS.md` para el detalle numérico:**
+ningún umbral da a la vez FA/hora ≤ 0.5 (el target del config) y un
+recall usable sobre `eval_frozen/` (mejor punto: ~90 % de falso rechazo).
+Se probó bajar el peso de `hard_negatives` en el batch (32→16) como
+hipótesis de causa — la diferencia resultó ser ruido de muestra (1 toma
+sobre 30), así que se descartó como causa dominante. Lectura: con 63
+tomas reales de entrenamiento el modelo no generaliza a una toma nueva —
+consistente con necesitar más dato (el plan de seguir grabando hacia
+150-200 ya estaba en curso), no con un problema de configuración. La
+metodología y las herramientas quedan listas para re-evaluar sin trabajo
+adicional cuando el dataset crezca.
 
 ## Estado
 
@@ -221,12 +237,14 @@ grabando):
       `dataset/eval_frozen/`, ver Decisión 5 — quedan 71 en
       `positive_train`/`positive_test` para entrenar)
 - [x] Set de evaluación congelado (Decisión 5, punto 1 del supervisor)
-- [x] Script de negativos difíciles (Decisión 5, punto 4 del supervisor) —
-      `record_hard_negatives.py`, sin grabaciones todavía
-- [ ] Métrica de evaluación real: falsos rechazos a tasa fija de falsas
-      activaciones/hora (Decisión 5, punto 2 del supervisor)
-- [ ] Medir falsas activaciones en ambiente real, 1-2h de audio de fondo
-      (Decisión 5, punto 3 del supervisor)
+- [x] Negativos difíciles (Decisión 5, punto 4 del supervisor) — 80 tomas
+      reales grabadas y cableadas en el entrenamiento
+- [x] Métrica de evaluación real: falsos rechazos a tasa fija de falsas
+      activaciones/hora (Decisión 5, punto 2 del supervisor) —
+      `evaluate_model.py`
+- [x] Falsas activaciones en ambiente real medidas, 90 min de audio de
+      fondo (Decisión 5, punto 3 del supervisor) — resultado: modelo
+      actual no usable en ningún umbral, ver arriba y `PROGRESS.md`
 - [x] Descargar datasets de negativos precomputados — completo: ACAV100M
       (features, 17GB) + MIT RIR survey (270 archivos) + validation set
       (previo a esta revisión), más `background_noise/` (363 clips de

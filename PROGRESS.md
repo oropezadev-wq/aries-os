@@ -63,6 +63,27 @@ Días contados: ninguno todavía.
 - **Lectura actual:** el pipeline funciona (0,998 con audio limpio), el camino de captura de hoy es sano, el volumen y el filtrado espectral quedan descartados como explicación suficiente; lo que queda es pronunciación/acento, **por descarte y con un proxy que lo reproduce, todavía no medida con la voz real**. La expectativa de 0,40–0,49 con audio sano no es un número del pipeline (que da ~1,0 con voz inglesa limpia), sino de un hablante nativo.
 - **Pendiente antes de grabar tomas:** `.aries/pronunciation_probe.py` (4 rondas con la voz real por WASAPI: normal, "hei YAR-vis", "hey JAR-vis" con la j inglesa, estilo película; mide picos por frase y cuántos pasan 0,3). Si alguna pronunciación supera 0,3 de forma consistente, `hey_jarvis` cumpliría la condición (3) del contador sin entrenar nada. Para las tomas nuevas: `.aries/check_takes.py` (falla con ≥2 % de ceros digitales o racha ≥50 ms; validado: 30/30 tomas viejas fallan, una captura sana de hoy pasa).
 
+#### Entrenamiento del modelo custom "Oye Aries" (2026-09-21 en adelante)
+
+- **Decisión (2026-09-21):** en vez de la sonda de pronunciación, se entrena un modelo propio con la voz real del usuario en vez de seguir con `hey_jarvis`. Frase revisada de "Hola Aries" a **"Oye Aries"**. Se reutiliza el pipeline ya existente (`tools/wake_word_training/`); decisiones de diseño completas en `docs/specs/WakeWordTraining.spec.md` (Decisiones 1 y 5).
+- **Primera corrida de prueba (2026-09-21, 101 tomas reales):** comparación de scores crudos `hey_jarvis` vs el modelo nuevo sobre las mismas 101 tomas (sin aumentar) dio mediana 0,0005 vs 0,55 — señal fuerte, pero **sesgada**: el modelo había visto esas mismas tomas (aumentadas) durante su propio entrenamiento. Marcada explícitamente como "señal temprana", no como verificación real.
+- **Objeción del supervisor (2026-09-21/22) — metodología de evaluación:** comparar scores crudos sobre datos que el modelo ya vio no es válido. Pide 4 puntos: (1) congelar un set de evaluación por sesión, (2) definir una métrica real (falso rechazo a una tasa fija de falsas activaciones/hora), (3) medir falsas activaciones en el ambiente real del usuario, (4) grabar negativos difíciles ("oye"/"aries" sueltos, para que el modelo no aprenda el atajo de dispararse con una sola palabra). Estado y detalle completo de cada punto: `docs/specs/WakeWordTraining.spec.md`, Decisión 5.
+- **Set de evaluación congelado (2026-09-21):** 30 de las 101 tomas movidas a `dataset/eval_frozen/`, nunca tocadas por entrenamiento desde entonces. Salvedad honesta: las dos "sesiones" detectadas por fecha de modificación son del mismo día, separadas por ~35 min — no la diversidad de sesión real (otro día/estado de voz) que busca el punto 1 en espíritu; se congeló igual como punto de partida.
+- **Negativos difíciles grabados (2026-09-22):** 80 tomas reales (20 × "oye mira"/"oye tu"/"oye ya"/"aries" sola), cableadas en el entrenamiento como fuente de negativos (`training_config.yaml`, `feature_data_files.hard_negatives`).
+- **Audio ambiente real grabado (2026-09-22):** 90 min de audio de fondo variado (YouTube, voces + música) con el micrófono real, `dataset/ambient_audio/`.
+- **Evaluación real (2026-09-22, `tools/wake_word_training/evaluate_model.py`) — resultado honesto, no positivo:** sobre las 30 tomas de `eval_frozen/` (nunca vistas) y las 90 min de audio ambiente (streaming continuo, frame por frame, igual que en producción, no ventanas de duración fija):
+
+  | Umbral | Recall (eval_frozen) | Falso rechazo | FA/hora (ambiente) |
+  |---|---|---|---|
+  | 0,50 | 20 % | 80 % | 2,00 |
+  | 0,70 | 13 % | 87 % | 1,33 |
+  | 0,80 | 10 % | 90 % | 0,67 |
+
+  **Ningún umbral da a la vez FA/hora ≤ 0,5 (el target de `training_config.yaml`) y un recall usable.** El mejor punto de compromiso (umbral 0,80) rechaza el 90 % de las veces que el usuario realmente dice la frase. Como referencia, `hey_jarvis` da FA/hora = 0 en el mismo rango, pero porque tiene 0 % de recall en absoluto — no es una señal de estar bien calibrado, es que nunca reconoce nada en español.
+  - **Hipótesis probada y descartada:** bajar el peso de los negativos difíciles en el batch de entrenamiento (32→16) no cambió el resultado de forma significativa (90 % vs 93 % de falso rechazo al mismo FA/hora — diferencia de 1 toma sobre 30, dentro del ruido de muestra). No era la causa dominante.
+  - **Lectura:** con solo 63 tomas reales de entrenamiento (126 aumentadas), el modelo no generaliza a una toma nueva no vista — consistente con "hace falta más dato", no con un problema de configuración puntual. No se sigue ajustando hiperparámetros a ciegas sobre esto.
+- **Próximo paso:** seguir grabando positivas hacia las 150-200 (plan en curso, 71/200 al momento de esta evaluación) y volver a correr `evaluate_model.py` con el dataset más grande — la metodología y las herramientas ya están listas y son reutilizables sin trabajo adicional.
+
 ### Registro previo al contador vigente (no cuenta)
 
 - **2026-09-15 — descartado como día 1.** Se había anotado como día 1, pero del 14 al 20 el usuario casi no usó Aries (equipo apagado la mayoría de esos días). El contador reinició el 2026-09-20.
