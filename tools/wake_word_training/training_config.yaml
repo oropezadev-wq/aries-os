@@ -99,10 +99,20 @@ layer_size: 32
 # de la frase completa, en vez de diluirse entre las 256 negativas
 # genéricas de ACAV100M — el punto de estos negativos es enseñar una
 # distinción específica, no aportar volumen.
+# hard_negatives bajado de 32 a 16 el 2026-09-22 (evaluate_model.py,
+# Decisión 5 punto 2+3): con 32 (igual a positive) el modelo entrenado
+# colapsó — sobre dataset/eval_frozen/ (nunca visto), ningún umbral daba
+# a la vez FA/hora <=0.5 (target) Y recall usable (mejor punto: umbral
+# 0.70 -> FA/hora 0.67 pero falso_rechazo 93%). Hipótesis: al 10% del
+# batch, los negativos difíciles empujaron el escalado automático de
+# max_negative_weight en auto_train (`self.best_val_fp > target` disparó
+# dos veces, no había disparado nunca en la corrida sin ellos) y eso
+# aplastó el recall. Se prueba 16 como punto intermedio — ver el
+# resultado real en PROGRESS.md antes de asumir que esto lo arregla.
 batch_n_per_class:
   positive: 32
   ACAV100M: 256
-  hard_negatives: 32
+  hard_negatives: 16
 
 # steps=10000 es el valor real de producción — para una corrida de humo
 # rápida (validar que el pipeline no rompe, no un modelo usable) pasar
