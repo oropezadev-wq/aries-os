@@ -21,6 +21,16 @@ os.environ.setdefault(
     "MEMORY_DB_PATH", str(Path(tempfile.mkdtemp(prefix="aries-test-memory-")) / "memory.db")
 )
 
+# Auditoría de seguridad 2026-09-23 (hallazgo CRÍTICO #1): POST /message y
+# POST /message/confirm rechazan todo pedido si Settings.api_key está vacía
+# (falla cerrado) — sin esto, cualquier test que llame a esos endpoints via
+# TestClient recibiría 401 en vez de lo que esté probando. Mismo criterio
+# que MEMORY_DB_PATH arriba: seteado antes de cualquier import que dispare
+# la construcción de `aries.api.settings`. No es un secreto real, vive acá
+# a la vista para que los tests que llaman a esos endpoints lo importen.
+TEST_API_KEY = "test-api-key-not-a-secret"
+os.environ.setdefault("API_KEY", TEST_API_KEY)
+
 from collections.abc import AsyncGenerator
 
 import pytest

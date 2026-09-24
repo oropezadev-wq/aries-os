@@ -42,7 +42,9 @@ def _build_pipeline(settings: Settings) -> VoicePipeline:
         model_path=settings.voice_tts_model_path,
         config_path=settings.voice_tts_config_path or None,
     )
-    config = VoicePipelineConfig(api_base_url=settings.voice_api_base_url)
+    config = VoicePipelineConfig(
+        api_base_url=settings.voice_api_base_url, api_key=settings.api_key.get_secret_value()
+    )
 
     audio_device: int | str | None = settings.voice_audio_device or None
     if isinstance(audio_device, str) and audio_device.strip().lstrip("-").isdigit():

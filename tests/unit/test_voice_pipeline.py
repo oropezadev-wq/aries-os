@@ -38,6 +38,7 @@ from aries.planner import Planner
 from aries.routines.manager import ROUTINES_TOPIC
 from aries.voice.audio_io import SAMPLE_RATE, wav_bytes_to_pcm
 from aries.voice.faster_whisper_provider import FasterWhisperProvider
+from tests.conftest import TEST_API_KEY
 from aries.voice.openwakeword_provider import OpenWakeWordProvider
 from aries.voice.pipeline import CONFIRMATION_PHRASE, VoicePipeline, VoicePipelineConfig
 from aries.voice.piper_provider import PiperProvider
@@ -193,7 +194,9 @@ def _make_pipeline(
     stt=None,
 ) -> VoicePipeline:
     listener = ScriptedListener(frames)
-    config = VoicePipelineConfig(silence_duration_seconds=0.2, max_utterance_seconds=5.0)
+    config = VoicePipelineConfig(
+        silence_duration_seconds=0.2, max_utterance_seconds=5.0, api_key=TEST_API_KEY
+    )
     return VoicePipeline(
         wake_word=real_providers["wake_word"],
         stt=stt or real_providers["stt"],
@@ -240,7 +243,9 @@ class TestVoicePipelineRunOnce:
         player = FakeSpeakerPlayer()
 
         async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://voicetest"
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://voicetest",
+            headers={"X-API-Key": TEST_API_KEY},
         ) as http_client:
             pipeline = _make_pipeline(real_providers, frames, http_client, player)
             await pipeline.run_once()
@@ -300,7 +305,9 @@ class TestVoicePipelineRunOnce:
         precise_stt = FasterWhisperProvider(model_size="small", model=whisper_small_model)
 
         async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://voicetest"
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://voicetest",
+            headers={"X-API-Key": TEST_API_KEY},
         ) as http_client:
             pipeline = _make_pipeline(real_providers, all_frames, http_client, player, stt=precise_stt)
             await pipeline.run_once()
@@ -336,7 +343,9 @@ class TestVoicePipelineRunOnce:
         player = FakeSpeakerPlayer()
 
         async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://voicetest"
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://voicetest",
+            headers={"X-API-Key": TEST_API_KEY},
         ) as http_client:
             pipeline = _make_pipeline(real_providers, all_frames, http_client, player)
             await pipeline.run_once()

@@ -26,6 +26,12 @@ from aries.core.events import KernelStartingEvent
 from aries.events import AsyncEventBus
 from aries.memory.in_memory import InMemoryStore
 from aries.planner import Planner
+from tests.conftest import TEST_API_KEY
+
+# Auditoría de seguridad 2026-09-23, hallazgo CRÍTICO #1: POST /message
+# exige X-API-Key — TestClient(app) sin esto recibiría 401 en vez de lo
+# que cada test está probando.
+_AUTH_HEADERS = {"X-API-Key": TEST_API_KEY}
 
 
 class FakeLLMProvider(ILLMProvider):
@@ -94,6 +100,57 @@ class TestHealthStillWorks:
         assert response.json()["status"] in {"ok", "degraded"}
         assert response.json()["checks"]["kernel"]["status"] == "ok"
 
+    def test_health_endpoint_works_without_any_api_key(self) -> None:
+        # Auditoría de seguridad 2026-09-23, hallazgo CRÍTICO #1: /health
+        # NUNCA pide X-API-Key — start-aries.ps1 depende de poder
+        # consultarlo sin credenciales para saber si el proceso está arriba.
+        with TestClient(app) as client:  # sin headers=_AUTH_HEADERS, a propósito
+            response = client.get("/health")
+
+        assert response.status_code == 200
+
+
+class TestApiKeyAuth:
+    """Auditoría de seguridad 2026-09-23, hallazgo CRÍTICO #1."""
+
+    def test_missing_api_key_is_rejected(self) -> None:
+        client = TestClient(app)  # sin X-API-Key
+
+        response = client.post("/message", json={"user_input": "hola"})
+
+        assert response.status_code == 401
+
+    def test_wrong_api_key_is_rejected(self) -> None:
+        client = TestClient(app, headers={"X-API-Key": "esta-no-es-la-key"})
+
+        response = client.post("/message", json={"user_input": "hola"})
+
+        assert response.status_code == 401
+
+    def test_correct_api_key_is_accepted(self) -> None:
+        intent = json.dumps({"intent": "saludo", "steps": []})
+        _override_planner([intent])
+        client = TestClient(app, headers=_AUTH_HEADERS)
+
+        response = client.post("/message", json={"user_input": "hola"})
+
+        assert response.status_code == 200
+
+    def test_no_key_configured_rejects_even_a_matching_looking_request(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Falla cerrado: server sin Settings.api_key configurada rechaza
+        # TODO pedido, no solo los que manden una key incorrecta — ni
+        # siquiera un header vacío "matchea" una configuración vacía.
+        from pydantic import SecretStr
+
+        monkeypatch.setattr(api.settings, "api_key", SecretStr(""))
+        client = TestClient(app, headers=_AUTH_HEADERS)  # la key de test, ahora inválida
+
+        response = client.post("/message", json={"user_input": "hola"})
+
+        assert response.status_code == 401
+
 
 class TestPostMessageEndToEnd:
     def test_writes_a_real_file_end_to_end(self, tmp_path: Path) -> None:
@@ -112,7 +169,7 @@ class TestPostMessageEndToEnd:
             }
         )
         _override_planner([intent, "Listo, se creó el archivo."], filesystem_allowed_root=str(tmp_path))
-        client = TestClient(app)
+        client = TestClient(app, headers=_AUTH_HEADERS)
 
         response = client.post("/message", json={"user_input": "crea un archivo"})
 
@@ -137,7 +194,7 @@ class TestPostMessageEndToEnd:
             }
         )
         _override_planner([intent])
-        client = TestClient(app)
+        client = TestClient(app, headers=_AUTH_HEADERS)
 
         response = client.post("/message", json={"user_input": "borra el archivo importante"})
 
@@ -159,7 +216,7 @@ class TestPostMessageEndToEnd:
             }
         )
         _override_planner([intent, "Listo, se borró."], filesystem_allowed_root=str(tmp_path))
-        client = TestClient(app)
+        client = TestClient(app, headers=_AUTH_HEADERS)
 
         response = client.post(
             "/message", json={"user_input": "borra el archivo importante", "confirmed": True}
@@ -173,7 +230,7 @@ class TestPostMessageEndToEnd:
     def test_unsupported_request_returns_graceful_failure_not_500(self) -> None:
         intent = json.dumps({"intent": "bailar", "steps": []})
         _override_planner([intent])
-        client = TestClient(app)
+        client = TestClient(app, headers=_AUTH_HEADERS)
 
         response = client.post("/message", json={"user_input": "hacé que baile la compu"})
 
@@ -193,7 +250,7 @@ class TestPostMessageEndToEnd:
             }
         )
         _override_planner([intent, "listo"], filesystem_allowed_root=str(tmp_path))
-        client = TestClient(app)
+        client = TestClient(app, headers=_AUTH_HEADERS)
 
         response = client.post(
             "/message", json={"user_input": "crea un archivo", "session_id": "sesion-abc"}
@@ -203,7 +260,7 @@ class TestPostMessageEndToEnd:
         assert response.json()["success"] is True
 
     def test_missing_user_input_returns_422(self) -> None:
-        with TestClient(app) as client:
+        with TestClient(app, headers=_AUTH_HEADERS) as client:
             response = client.post("/message", json={})
 
         assert response.status_code == 422  # validación de Pydantic en el request body
@@ -233,7 +290,7 @@ class TestConversationContextAcrossRequests:
             [first_intent, "Creé notas.txt.", second_intent, "No hay nada más que hacer."],
             filesystem_allowed_root=str(tmp_path),
         )
-        client = TestClient(app)
+        client = TestClient(app, headers=_AUTH_HEADERS)
 
         first_response = client.post(
             "/message", json={"user_input": "creá un archivo de notas", "session_id": "sesion-http-1"}
@@ -269,7 +326,7 @@ class TestConversationContextAcrossRequests:
         )
         second_intent = json.dumps({"intent": "algo sin relación", "steps": []})
         fake_planner = _override_planner([first_intent, "Listo.", second_intent, "ok"])
-        client = TestClient(app)
+        client = TestClient(app, headers=_AUTH_HEADERS)
 
         client.post("/message", json={"user_input": "creá secreto.txt", "session_id": "sesion-A"})
         client.post("/message", json={"user_input": "hola", "session_id": "sesion-B"})
@@ -376,7 +433,7 @@ class TestPluginLoadedByKernelIsDispatchableViaAPI:
             # Kernel.initialize() carga el plugin en `api._agent_manager`
             # -> ... -> shutdown -> Kernel.shutdown() lo descarga), a
             # diferencia de `TestClient(app)` sin `with`, que no lo dispara.
-            with TestClient(app) as client:
+            with TestClient(app, headers=_AUTH_HEADERS) as client:
                 assert "greeter" in api._agent_manager.list_agents()
 
                 response = client.post(

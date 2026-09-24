@@ -62,6 +62,11 @@ class VoicePipelineConfig:
     max_utterance_seconds: float = 10.0
     silence_duration_seconds: float = 1.0
     confirmation_timeout_seconds: float = 8.0
+    # Auditoría de seguridad 2026-09-23, hallazgo CRÍTICO #1: POST /message
+    # ahora exige `X-API-Key` — sin esto, VoicePipeline recibiría 401 en
+    # cada intento. Vacío = mismo comportamiento que el server con
+    # Settings.api_key vacía (falla, no un default silencioso).
+    api_key: str = ""
 
 
 class VoicePipeline:
@@ -107,7 +112,11 @@ class VoicePipeline:
 
     async def _get_http_client(self) -> httpx.AsyncClient:
         if self._http_client is None:
-            self._http_client = httpx.AsyncClient(base_url=self.config.api_base_url, timeout=30.0)
+            self._http_client = httpx.AsyncClient(
+                base_url=self.config.api_base_url,
+                timeout=30.0,
+                headers={"X-API-Key": self.config.api_key},
+            )
         return self._http_client
 
     # ------------------------------------------------------------------

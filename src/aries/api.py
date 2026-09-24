@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import secrets
 from collections.abc import AsyncIterator, Awaitable, Iterable
 from contextlib import asynccontextmanager
 from typing import Literal
 
 import redis.asyncio as redis_asyncio
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from pydantic import BaseModel
 
 from .agents.manager import AgentManager
@@ -155,6 +156,23 @@ def get_planner() -> Planner:
     )
 
 
+async def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
+    """Dependencia de auth para `POST /message`/`POST /message/confirm` —
+    NUNCA para `GET /health` (deliberado: `start-aries.ps1` depende de
+    poder consultarlo sin credenciales para saber si el proceso está
+    arriba, ver Decisión 5 de `docs/audits/2026-09-23-security-audit.md`).
+
+    Falla cerrado: si `Settings.api_key` está vacía (sin configurar), TODO
+    pedido se rechaza — no hay un default inseguro tipo
+    `secret_key="change-me-in-production"` que nadie cambie nunca.
+    `secrets.compare_digest` en vez de `==` para no filtrar por timing
+    cuánto del prefijo de la key coincide.
+    """
+    configured = settings.api_key.get_secret_value()
+    if not configured or not x_api_key or not secrets.compare_digest(x_api_key, configured):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="API key inválida o no configurada")
+
+
 class MessageRequest(BaseModel):
     """Body de `POST /message`."""
 
@@ -298,7 +316,12 @@ async def health_check(request: Request) -> HealthResponse:
     )
 
 
-@app.post("/message", summary="Envía un mensaje al Planner", response_model=MessageResponse)
+@app.post(
+    "/message",
+    summary="Envía un mensaje al Planner",
+    response_model=MessageResponse,
+    dependencies=[Depends(require_api_key)],
+)
 async def post_message(
     request: MessageRequest, planner: Planner = Depends(get_planner)
 ) -> MessageResponse:
