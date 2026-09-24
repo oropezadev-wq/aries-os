@@ -210,7 +210,13 @@ después, a pedido del usuario):
 - Punto 2: `tools/wake_word_training/evaluate_model.py` — calcula falsos
   rechazos sobre `dataset/eval_frozen/` a una tasa fija de falsas
   activaciones/hora medida en `dataset/ambient_audio/` (streaming continuo
-  frame por frame, no scores crudos).
+  frame por frame, no scores crudos). **Refinado (2026-09-24):** la
+  primera versión reportaba el umbral más cercano al target entre los
+  valores de `--thresholds` probados — no un punto de operación exacto,
+  y no comparable entre corridas si la grilla de umbrales usada difiere.
+  `_frr_at_fixed_fa_per_hour()` ahora interpola el umbral exacto donde
+  FA/hora cruza el target sobre una grilla fina (400 puntos), dando un
+  único número objetivo y reproducible entre corridas.
 
 **Resultado de la primera corrida con la metodología completa
 (2026-09-22) — no positivo, ver `PROGRESS.md` para el detalle numérico:**
@@ -224,6 +230,14 @@ consistente con necesitar más dato (el plan de seguir grabando hacia
 150-200 ya estaba en curso), no con un problema de configuración. La
 metodología y las herramientas quedan listas para re-evaluar sin trabajo
 adicional cuando el dataset crezca.
+
+**Re-confirmado (2026-09-24) con la métrica interpolada, mismo modelo sin
+reentrenar:** umbral=0,8821 → falso rechazo=93,3 % al FA/hora=0,5
+objetivo — mismo resultado negativo, medido con más precisión. Ver
+`PROGRESS.md` para el detalle. **La corrida de entrenamiento de
+producción (steps=10000) queda pausada a pedido explícito del usuario
+hasta terminar de grabar el dataset (101/150-200 al momento de esta
+nota)** — no arrancarla todavía.
 
 ## Estado
 
