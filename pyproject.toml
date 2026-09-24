@@ -63,12 +63,11 @@ dev = [
     "mypy>=1.9,<3.0",
     "isort>=5.13,<10.0",
     "mkdocs>=1.5,<2.0",
-    # OJO: el piso ">=10.0" parece roto — la última versión publicada de
-    # mkdocs-material al 2026-09-23 es 9.7.7, o sea este rango nunca fue
-    # satisfacible (probable typo por "9.0" al declararlo). No se corrige
-    # acá (cambiar el piso es otro tipo de fix del que se pidió — solo
-    # techo); queda flageado para que se decida aparte.
-    "mkdocs-material>=10.0,<11.0",
+    # Piso corregido (2026-09-24, a pedido del usuario): ">=10.0" era un
+    # typo por "9.0" — nunca fue satisfacible, la última versión publicada
+    # de mkdocs-material al 2026-09-23 es 9.7.7. `make docs` (Makefile)
+    # depende de este extra, así que se corrige en vez de quitarlo.
+    "mkdocs-material>=9.5,<10.0",
     "bandit>=1.8,<2.0",
     "safety>=2.0,<4.0",
     "pre-commit>=3.5,<5.0",
@@ -119,8 +118,8 @@ desktop = [
 
 docs = [
     "mkdocs>=1.5,<2.0",
-    # Mismo piso posiblemente roto que en el extra `dev` — ver nota ahí.
-    "mkdocs-material>=10.0,<11.0",
+    # Mismo piso corregido que en el extra `dev` — ver nota ahí.
+    "mkdocs-material>=9.5,<10.0",
     "mkdocstrings[python]>=0.24,<2.0",
 ]
 
