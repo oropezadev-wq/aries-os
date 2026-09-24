@@ -148,9 +148,13 @@ silencio genuino → corte antes de que el usuario llegara a decir nada.
 **Fix:** `MicrophoneListener.drain()` (`audio_io.py`) descarta sin
 bloquear lo acumulado en el stream, invocado en
 `_listen_for_activation_sync()` justo después del beep de inicio y
-antes de `record_until_silence()` (commit `21bd881`). No verificable
-físicamente en este entorno (sin micrófono/hotkey real) — pendiente
-de confirmación del usuario con hardware real.
+antes de `record_until_silence()` (commit `21bd881`).
+
+**Estado: fix implementado, pendiente mi verificación física — NO
+dado por cerrado.** No es verificable en este entorno (sin
+micrófono/hotkey real); requiere que el usuario lo prenda con
+hardware real y confirme que el corte dejó de pasar antes de
+considerarlo resuelto.
 
 ### Registro previo al contador vigente (no cuenta)
 
