@@ -107,7 +107,13 @@ motor se validen contra la realidad y no contra una demo.
   define por resultado y no por solución: no se da por cerrado que haga
   falta un modelo propio hasta descartar que `hey_jarvis` falle por
   audio degradado (ver `PROGRESS.md`, revisión del diagnóstico de Voice
-  del 2026-09-20).
+  del 2026-09-20). **Aclarado el 2026-09-24, al sumar push-to-talk (hotkey
+  global como vía de activación adicional a la wake word):
+  push-to-talk NO cuenta para esta condición (3).** El criterio sigue
+  siendo manos libres — push-to-talk es una vía alternativa de
+  activación para cuando eso no es práctico (ej. la wake word no
+  detecta de forma confiable todavía), no un reemplazo que satisfaga el
+  requisito.
 - **(a) Una falla grave resetea el contador a cero.** No se descuenta
   solo el día en que ocurrió — las 2 semanas tienen que ser consecutivas
   y limpias, y vuelven a empezar de cero después de cada falla grave.

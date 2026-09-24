@@ -11,7 +11,7 @@
 > este contador a cero**, no descuenta solo ese día — un criterio que
 > nadie mide no sirve, por eso una línea acá por cada día real.
 
-**Contador PAUSADO desde el 2026-09-20 (decisión del usuario, ver `docs/VISION.md`).** Motivo: la tarea de Task Scheduler "Aries OS" está desregistrada (verificado) por el problema eléctrico del equipo, y sin arranque automático no se puede validar que Aries se recupera solo — justo la regla de abajo. Contar días de uso manual habría dejado llegar al día 14 sin haber probado nunca el arranque desatendido real. Mientras esté pausado el contador no avanza ni se resetea; hoy hay **0 días contados** (el día 1 nunca se completó). **El contador arranca (desde el día 1) recién cuando se cumplan las tres condiciones** (decisión del usuario, 2026-09-20; ver `docs/VISION.md`): (1) regulador/UPS conseguido; (2) tarea de Task Scheduler registrada de nuevo (`scripts\register-aries-task.ps1`); (3) **wake word que detecte la voz del usuario de forma confiable, con audio de captura verificado como sano** (sin compuerta ni filtrado de Windows; reformulada el 2026-09-20, antes decía "wake word propia en español" — ver la revisión del diagnóstico de Voice más abajo). Los días de uso manual mientras tanto se anotan abajo como observación, sin sumar.
+**Contador PAUSADO desde el 2026-09-20 (decisión del usuario, ver `docs/VISION.md`).** Motivo: la tarea de Task Scheduler "Aries OS" está desregistrada (verificado) por el problema eléctrico del equipo, y sin arranque automático no se puede validar que Aries se recupera solo — justo la regla de abajo. Contar días de uso manual habría dejado llegar al día 14 sin haber probado nunca el arranque desatendido real. Mientras esté pausado el contador no avanza ni se resetea; hoy hay **0 días contados** (el día 1 nunca se completó). **El contador arranca (desde el día 1) recién cuando se cumplan las tres condiciones** (decisión del usuario, 2026-09-20; ver `docs/VISION.md`): (1) regulador/UPS conseguido; (2) tarea de Task Scheduler registrada de nuevo (`scripts\register-aries-task.ps1`); (3) **wake word que detecte la voz del usuario de forma confiable, con audio de captura verificado como sano** (sin compuerta ni filtrado de Windows; reformulada el 2026-09-20, antes decía "wake word propia en español" — ver la revisión del diagnóstico de Voice más abajo). **Aclarado el 2026-09-24: push-to-talk (hotkey global, sumado como vía de activación adicional — ver "Push-to-talk" más abajo) NO cuenta para la condición (3) — el criterio sigue siendo manos libres.** Los días de uso manual mientras tanto se anotan abajo como observación, sin sumar.
 
 **Regla aclarada el 2026-09-20 (decisión del usuario, ver `docs/VISION.md`):** una caída del equipo por hardware (apagado o reinicio espontáneo) NO resetea el contador si Aries se recupera solo al volver a iniciar sesión, sin intervención. Se anota igual acá, en la fila del día, con su nota.
 
@@ -83,6 +83,53 @@ Días contados: ninguno todavía.
   - **Hipótesis probada y descartada:** bajar el peso de los negativos difíciles en el batch de entrenamiento (32→16) no cambió el resultado de forma significativa (90 % vs 93 % de falso rechazo al mismo FA/hora — diferencia de 1 toma sobre 30, dentro del ruido de muestra). No era la causa dominante.
   - **Lectura:** con solo 63 tomas reales de entrenamiento (126 aumentadas), el modelo no generaliza a una toma nueva no vista — consistente con "hace falta más dato", no con un problema de configuración puntual. No se sigue ajustando hiperparámetros a ciegas sobre esto.
 - **Próximo paso:** seguir grabando positivas hacia las 150-200 (plan en curso, 71/200 al momento de esta evaluación) y volver a correr `evaluate_model.py` con el dataset más grande — la metodología y las herramientas ya están listas y son reutilizables sin trabajo adicional.
+
+#### Push-to-talk (2026-09-24)
+
+Vía de activación adicional a la wake word — un hotkey global. **No
+cuenta para la condición (3) del contador** (ver arriba): el criterio de
+Fase 1 sigue siendo manos libres, push-to-talk es un atajo para cuando
+eso no es práctico todavía, no un reemplazo.
+
+4 decisiones del usuario, confirmadas antes de escribir código:
+
+- **Misma vía de activación que la wake word, mismo punto de entrada**
+  (no un camino paralelo a whisper): `VoicePipeline._listen_for_activation_sync`
+  ahora espera wake word O hotkey en el mismo loop — de ahí en más
+  (grabar, STT, `POST /message`, confirmación, hablar) el flujo es
+  idéntico sin importar quién activó el turno.
+- **Guarda de concurrencia — se ignora, no cancela:** una pulsación
+  mientras el pipeline ya está escuchando/procesando se descarta
+  directo, no se encola para la próxima vez que quede libre.
+- **Feedback sonoro:** `winsound.Beep` (stdlib, sin dependencia nueva)
+  al empezar a grabar y al cortar por silencio — dos tonos distintos.
+  El proceso corre con ventana oculta, sin consola visible; sin esto no
+  hay ninguna señal de que está escuchando.
+- **El listener del hotkey vive dentro de `VoicePipeline` directamente**
+  (arrancado/parado en `run_forever()`, no vía MessageBus/Redis) —
+  sigue funcionando aunque Redis esté caído.
+
+**Mecanismo del hotkey — decisión de diseño no trivial, confirmada por
+el usuario:** `ctypes` + `RegisterHotKey` de Win32 (stdlib), no una
+librería de terceros (`keyboard`/`pynput`) — sin dependencia nueva.
+`RegisterHotKey` exige una ventana con loop de mensajes para recibir
+`WM_HOTKEY`; se usa una ventana "message-only" (nunca visible) en un
+hilo propio. Combinación configurable (`Settings.voice_hotkey_combo`,
+default `ctrl+alt+shift+v`), elegida rara a propósito para no pisar
+atajos de Windows/VSCode.
+
+Dos bugs reales de `ctypes` encontrados y corregidos durante la
+verificación (no eran obvios de antemano — ver commit
+`bda258e`): (1) sin `argtypes`/`restype` declarados explícitamente,
+`ctypes` no marshalea bien un handle de 64 bits como argumento; (2)
+Windows guarda el `WNDPROC` a nivel de *clase* de ventana al
+registrarla, no por ventana — dos listeners con el mismo nombre de
+clase en el mismo proceso terminaban compartiendo el callback del
+primero que logró registrarla. Verificado con Win32 real (no
+mockeado): registro/creación de ventana real, y entrega real de
+`WM_HOTKEY` vía `PostMessageW` (no se puede simular una tecla física en
+un entorno headless, pero esto ejercita toda la plomería real salvo la
+captura física del teclado por el sistema operativo).
 
 ### Registro previo al contador vigente (no cuenta)
 
