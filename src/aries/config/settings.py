@@ -22,7 +22,14 @@ class Settings(BaseSettings):
     llm_model: str = Field("neural-chat", description="Modelo LLM")
     llm_base_url: HttpUrl = Field(HttpUrl("http://localhost:11434"), description="URL base del proveedor LLM")
     voice_enabled: bool = Field(True, description="Activa el soporte de voz")
-    api_host: str = Field("0.0.0.0", description="Host de la API")
+    api_host: str = Field(
+        "127.0.0.1",
+        description="Host de la API. Default loopback-only (auditoría de seguridad 2026-09-23,"
+        " docs/audits/2026-09-23-security-audit.md): POST /message no tiene autenticación todavía"
+        " (pendiente de diseño), así que escuchar en 0.0.0.0 exponía ejecución de comandos/acceso a"
+        " archivos sin login a cualquier dispositivo en la red. Exponerlo en red es opt-in explícito"
+        " (setear esta variable), no el default.",
+    )
     api_port: int = Field(8000, description="Puerto de la API")
     secret_key: SecretStr = Field(SecretStr("change-me-in-production"), description="Clave secreta para la aplicación")
     kernel_housekeeping_interval_seconds: float = Field(
