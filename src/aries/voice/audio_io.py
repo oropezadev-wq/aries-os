@@ -171,13 +171,32 @@ class MicrophoneListener:
             frame = _resample_frame(frame, self._native_rate, self.sample_rate, self.frame_size)
         return frame
 
+    def drain(self) -> None:
+        """Descarta, sin bloquear, lo que haya quedado acumulado en el
+        buffer de captura. El stream sigue grabando aunque nadie llame a
+        `read_frame()` — un bloqueo del lado de Python (ej. un beep
+        sincrónico como `winsound.Beep`) NO pausa el micrófono, solo
+        deja de vaciarse el buffer. Bug real encontrado con push-to-talk
+        (ver `docs/specs/Voice.spec.md`): sin este drenaje, la primera
+        lectura después del beep de "empezar a escuchar" devolvía lo
+        capturado MIENTRAS sonaba — muy probablemente el propio beep
+        colado por acoplamiento acústico parlante->micrófono — que
+        `record_until_silence` interpretaba como el inicio del habla,
+        cortando la grabación real antes de que el usuario llegara a
+        decir nada."""
+        if self._stream is None:
+            raise RuntimeError("MicrophoneListener no está abierto — llamar open() primero")
+        available = self._stream.read_available
+        if available > 0:
+            self._stream.read(available)
+
     def close(self) -> None:
         if self._stream is not None:
             self._stream.stop()
             self._stream.close()
             self._stream = None
 
-    def __enter__(self) -> "MicrophoneListener":
+    def __enter__(self) -> MicrophoneListener:
         self.open()
         return self
 

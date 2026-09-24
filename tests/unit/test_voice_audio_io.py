@@ -10,9 +10,11 @@ necesita orquestar `MicrophoneListener`/`SpeakerPlayer` completos.
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from aries.voice.audio_io import (
     SAMPLE_RATE,
+    MicrophoneListener,
     _prefer_wasapi_input_device,
     _resample_frame,
     pcm_to_wav_bytes,
@@ -131,3 +133,50 @@ class TestRecordUntilSilence:
 
         pcm, _sample_rate, _channels, _width = wav_bytes_to_pcm(wav_bytes)
         assert len(pcm) // 2 == frame_size * 5
+
+
+class FakeStream:
+    """Doble del `sounddevice.InputStream` interno de `MicrophoneListener`
+    — solo lo que `drain()` necesita: `read_available` y `read()`."""
+
+    def __init__(self, buffered_frames: int) -> None:
+        self.read_available = buffered_frames
+        self.read_calls: list[int] = []
+
+    def read(self, n: int):
+        self.read_calls.append(n)
+        self.read_available = 0
+        return np.zeros(n, dtype=np.int16), False
+
+
+class TestMicrophoneListenerDrain:
+    """Push-to-talk (docs/specs/Voice.spec.md): bug real encontrado con
+    un hotkey de verdad — sin drenar, la primera lectura tras el beep de
+    "empezar a escuchar" agarraba lo acumulado en el buffer MIENTRAS
+    sonaba (el stream sigue grabando aunque nadie lea), muy probablemente
+    el propio beep colado por acoplamiento acústico."""
+
+    def test_drain_reads_and_discards_buffered_frames(self) -> None:
+        listener = MicrophoneListener()
+        stream = FakeStream(buffered_frames=237)
+        listener._stream = stream
+
+        listener.drain()
+
+        assert stream.read_calls == [237]
+        assert stream.read_available == 0
+
+    def test_drain_does_nothing_when_buffer_is_empty(self) -> None:
+        listener = MicrophoneListener()
+        stream = FakeStream(buffered_frames=0)
+        listener._stream = stream
+
+        listener.drain()
+
+        assert stream.read_calls == []  # no llama a read() sin necesidad
+
+    def test_drain_raises_if_not_open(self) -> None:
+        listener = MicrophoneListener()
+
+        with pytest.raises(RuntimeError, match="no está abierto"):
+            listener.drain()

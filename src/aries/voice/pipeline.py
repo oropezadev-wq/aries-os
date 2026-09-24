@@ -181,6 +181,14 @@ class VoicePipeline:
                     break
             self._idle.clear()
             winsound.Beep(_BEEP_START_FREQUENCY_HZ, _BEEP_DURATION_MS)
+            # El micrófono sigue capturando mientras suena el beep (nadie
+            # lo pausa) — sin este drenaje, la primera lectura de
+            # `record_until_silence` agarra lo acumulado DURANTE el beep,
+            # muy probablemente el propio tono colado por acoplamiento
+            # acústico, cortando la grabación real antes de que el
+            # usuario llegue a decir nada (bug real, encontrado con un
+            # push-to-talk de verdad — ver `MicrophoneListener.drain()`).
+            self.listener.drain()
             audio = record_until_silence(
                 self.listener,
                 max_seconds=self.config.max_utterance_seconds,

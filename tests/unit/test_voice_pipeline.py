@@ -114,6 +114,13 @@ class ScriptedListener:
         self._index += 1
         return frame
 
+    def drain(self) -> None:
+        """No-op acá: `ScriptedListener` no tiene un buffer real detrás
+        (los frames son un guion en memoria, no un stream de hardware) —
+        ver `MicrophoneListener.drain()` para el motivo real de este
+        método (push-to-talk, `docs/specs/Voice.spec.md`)."""
+        return None
+
     def __enter__(self) -> ScriptedListener:
         return self
 
