@@ -111,6 +111,50 @@ def _events_above_threshold(scores: np.ndarray, threshold: float) -> int:
     return int(np.sum(above[1:] & ~above[:-1]) + (1 if above[0] else 0))
 
 
+def _frr_at_fixed_fa_per_hour(
+    eval_scores: np.ndarray,
+    ambient_scores: np.ndarray,
+    ambient_hours: float,
+    target_fa_per_hour: float,
+    grid_size: int = 400,
+) -> tuple[float, float]:
+    """Punto de operación real pedido por el supervisor (Decisión 5,
+    punto 2 de `docs/specs/WakeWordTraining.spec.md`): falso rechazo
+    exactamente en el umbral donde FA/hora == `target_fa_per_hour`, no en
+    "el umbral más cercano entre los que se pasaron por `--thresholds`"
+    (lo que hacía antes esta función, y que no es un punto de comparación
+    objetivo entre corridas si dos corridas usan grillas de umbral
+    distintas). Devuelve `(umbral, falso_rechazo)` en ese punto exacto.
+
+    FA/hora(umbral) es monótona no creciente (un umbral más alto nunca
+    genera más falsas activaciones); se evalúa en una grilla fina entre
+    0.001 y 0.999 (se excluyen los extremos exactos 0/1, degenerados:
+    en 0.0 el stream entero cuenta como un único evento contiguo) y se
+    interpola linealmente entre los dos puntos que bracketean el target."""
+    grid = np.linspace(0.001, 0.999, grid_size)
+    fa_curve = np.array([_events_above_threshold(ambient_scores, t) / ambient_hours for t in grid])
+
+    below = np.where(fa_curve < target_fa_per_hour)[0]
+    if fa_curve[0] < target_fa_per_hour:
+        # Ni el umbral más permisivo de la grilla llega al target: no hay
+        # ningún punto de operación real con este modelo/dataset en el
+        # rango evaluado. Se informa el extremo, no se fabrica un número.
+        recall = float((eval_scores >= grid[0]).mean())
+        return float(grid[0]), 1 - recall
+    if len(below) == 0:
+        recall = float((eval_scores >= grid[-1]).mean())
+        return float(grid[-1]), 1 - recall
+
+    hi = int(below[0])
+    lo = hi - 1
+    t_lo, t_hi = grid[lo], grid[hi]
+    fa_lo, fa_hi = fa_curve[lo], fa_curve[hi]
+    threshold = t_lo if fa_lo == fa_hi else t_lo + (fa_lo - target_fa_per_hour) / (fa_lo - fa_hi) * (t_hi - t_lo)
+
+    recall = float((eval_scores >= threshold).mean())
+    return float(threshold), 1 - recall
+
+
 def _evaluate(model, key: str, eval_dir: Path, ambient_dir: Path, thresholds: list[float]) -> None:
     eval_scores = _score_eval_frozen(model, key, eval_dir)
     ambient_scores, ambient_hours = _score_ambient_stream(model, key, ambient_dir)
@@ -120,19 +164,16 @@ def _evaluate(model, key: str, eval_dir: Path, ambient_dir: Path, thresholds: li
     print(f"ambient_audio: {ambient_hours:.2f} horas, {len(ambient_scores)} frames\n")
     print(f"{'umbral':>7s} {'recall':>8s} {'falso_rechazo':>14s} {'FA/hora':>10s}")
 
-    best_row = None
     for t in thresholds:
         recall = float((eval_scores >= t).mean())
         frr = 1 - recall
         n_events = _events_above_threshold(ambient_scores, t)
         fa_per_hour = n_events / ambient_hours
         print(f"{t:7.2f} {recall:8.2%} {frr:14.2%} {fa_per_hour:10.2f}")
-        if best_row is None or abs(fa_per_hour - TARGET_FA_PER_HOUR) < abs(best_row[2] - TARGET_FA_PER_HOUR):
-            best_row = (t, frr, fa_per_hour)
 
-    t, frr, fa = best_row
-    print(f"\nUmbral más cercano a {TARGET_FA_PER_HOUR} FA/hora (target de training_config.yaml): "
-          f"umbral={t:.2f} -> falso_rechazo={frr:.0%}, FA/hora={fa:.2f}")
+    threshold, frr = _frr_at_fixed_fa_per_hour(eval_scores, ambient_scores, ambient_hours, TARGET_FA_PER_HOUR)
+    print(f"\n=== Punto de operación @ {TARGET_FA_PER_HOUR} FA/hora (interpolado, comparable entre corridas) ===")
+    print(f"umbral={threshold:.4f} -> falso_rechazo={frr:.1%} (recall={1 - frr:.1%})")
 
 
 def main() -> None:
