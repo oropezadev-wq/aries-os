@@ -131,6 +131,27 @@ mockeado): registro/creación de ventana real, y entrega real de
 un entorno headless, pero esto ejercita toda la plomería real salvo la
 captura física del teclado por el sistema operativo).
 
+**Bug real con hardware real (2026-09-24), reportado por el usuario:**
+hotkey y beep de inicio funcionaban, pero tras hablar el STT no
+reconocía nada ("no te escuché bien"). Diagnóstico con evidencia de
+`logs/voice_20260924_050834.err.log` (15 activaciones reales): las 5
+fallidas compartían el mismo patrón exacto — duración ~1.1-1.3s con
+el filtro VAD de faster-whisper removiendo el 100% del audio; las 10
+exitosas medían 1.68-3.28s con solo una fracción chica removida.
+Causa raíz: `winsound.Beep()` bloquea ~150ms, pero el `InputStream`
+de `sounddevice` sigue capturando en background durante ese bloqueo
+— nadie lo pausa. La primera lectura de `record_until_silence()` tras
+el beep consumía ese buffer acumulado (muy probablemente la cola
+acústica del propio beep, colada por acoplamiento parlante→micrófono),
+que el gate de RMS interpretaba como inicio de habla real, seguido de
+silencio genuino → corte antes de que el usuario llegara a decir nada.
+**Fix:** `MicrophoneListener.drain()` (`audio_io.py`) descarta sin
+bloquear lo acumulado en el stream, invocado en
+`_listen_for_activation_sync()` justo después del beep de inicio y
+antes de `record_until_silence()` (commit `21bd881`). No verificable
+físicamente en este entorno (sin micrófono/hotkey real) — pendiente
+de confirmación del usuario con hardware real.
+
 ### Registro previo al contador vigente (no cuenta)
 
 - **2026-09-15 — descartado como día 1.** Se había anotado como día 1, pero del 14 al 20 el usuario casi no usó Aries (equipo apagado la mayoría de esos días). El contador reinició el 2026-09-20.
