@@ -56,25 +56,26 @@ sin login, sin token, sin rate limit.
   explícito, no el default. Verificado que no rompe `start-aries.ps1`
   (su chequeo de salud ya apuntaba a `127.0.0.1:8000` en duro) ni
   `voice_api_base_url` (VoicePipeline ya llamaba a `127.0.0.1:8000`).
-- ⏸️ **Pendiente, decisión de diseño no trivial (no implementado
-  todavía):** autenticación real de `POST /message` (API key), con dos
-  cuidados explícitos del usuario: VoicePipeline necesita poder seguir
-  llamando al endpoint con la key, y `GET /health` tiene que quedar
-  **sin** autenticar (si no, el gate de arranque de `start-aries.ps1`
-  se rompe en el próximo reinicio, porque valida `/health` antes de
-  considerar el proceso arriba).
-- ⏸️ **Pendiente, decisión de diseño no trivial (no implementado
-  todavía):** la confirmación de acciones destructivas. El arreglo
-  correcto que pidió el supervisor **no** es mover el `confirmed: bool`
-  a otro endpoint — es que el servidor nunca acepte una confirmación que
-  venga afirmada por el cliente sin verificación propia. Diseño: el
-  servidor devuelve una acción pendiente con un id (no una acción ya
-  autorizada), y la confirmación real llega respetando la misma regla
-  que ya existe para voz (`CONFIRMATION_PHRASE = "confirmo"`,
-  `src/aries/voice/pipeline.py`) — HTTP tiene que respetar esa misma
-  regla en vez de un booleano de confianza ciega. Ver sección
-  "Decisiones de diseño pendientes" más abajo para el detalle de las
-  preguntas abiertas.
+- ✅ **Paso 2, hecho (commit `980a98b`):** autenticación por API key en
+  `POST /message`/`POST /message/confirm` (header `X-API-Key`,
+  `Settings.api_key`, falla cerrado si no está configurada — sin default
+  inseguro). `GET /health` queda deliberadamente sin autenticar.
+  VoicePipeline manda la key (`VoicePipelineConfig.api_key`).
+- ✅ **Paso 3, hecho (commit `9267b12`):** confirmación server-side. El
+  servidor ya no acepta un `confirmed: bool` afirmado por el cliente —
+  `Planner.handle()` devuelve una acción pendiente con `confirmation_id`
+  (guardada en Redis, TTL configurable, de un solo uso), y
+  `Planner.confirm()` (nuevo endpoint `POST /message/confirm`) verifica
+  `confirmation_text` contra `CONFIRMATION_PHRASE` **del lado del
+  servidor** — la misma regla que antes solo verificaba `VoicePipeline`
+  del lado del cliente (movida a `planner/models.py`: ahora es una regla
+  del Planner, no un detalle exclusivo de voz). Verificado end-to-end
+  contra Redis real: pendiente con id, frase incorrecta no ejecuta, id de
+  un solo uso, frase correcta ejecuta, id desconocido falla gracioso.
+  Bug real encontrado y corregido durante la verificación (no en el
+  diseño original): `_execute_plan()` volvía a pedir confirmación del
+  mismo paso que se acababa de aprobar (loop) — ver el commit para el
+  detalle.
 
 ### ALTO — 2. `ProcessAgent` sin whitelist de ejecutables
 
@@ -101,11 +102,12 @@ Ningún agente valida que `path`/`db_path`/`repo_path` estén dentro de un
 directorio permitido — path traversal / acceso a cualquier archivo o
 `.db` del disco.
 
-**Disposición (2026-09-23):** mecanismo de arreglo confirmado y validado
-hoy mismo (no implementado todavía — decisión de diseño pendiente sobre
-la raíz permitida, ver más abajo): `Path.resolve()` + `is_relative_to()`
-contra una raíz configurable, **no** comparación de strings. Se probó en
-esta máquina (Windows) antes de proponerlo:
+**Disposición (2026-09-23), hecho (commit `960f02d`):** `Path.resolve()` +
+`is_relative_to()` contra `Settings.filesystem_allowed_root` (nueva,
+default `""` = sin configurar, ambos agentes fallan cerrado — decisión
+del usuario, sin default permisivo como el home del usuario), **no**
+comparación de strings. Se probó en esta máquina (Windows) antes de
+implementarlo:
 
 - Nombres 8.3 (`C:\PROGRA~1`) se resuelven correctamente a la forma larga
   canónica (`C:\Program Files`) — sin necesitar código extra.
@@ -178,19 +180,23 @@ historial de la sesión si hace falta el detalle línea por línea).
 
 ---
 
-## Decisiones de diseño pendientes (no implementadas — frenado antes de escribir código, a pedido del usuario)
+## Decisiones de diseño — resueltas (2026-09-23)
 
-Tres piezas quedan sin resolver porque son decisiones de arquitectura, no
-ejecución mecánica. Ver el resto de la conversación de esta sesión para
-las preguntas concretas planteadas al usuario sobre cada una:
+Las 3 piezas que se frenaron antes de escribir código (decisiones de
+arquitectura, no ejecución mecánica) quedaron todas confirmadas por el
+usuario e implementadas el mismo día:
 
-1. **API key en `POST /message`** — dónde vive la key, cómo la obtiene
-   VoicePipeline, `GET /health` excluido.
+1. **API key en `POST /message`** — `Settings.api_key`, falla cerrado si
+   no está configurada; `GET /health` excluido. Commit `980a98b`.
 2. **Confirmación de acciones destructivas server-side** — acción
-   pendiente con id + la misma regla de frase de voz ya existente,
-   aplicada también a HTTP, en vez de un `confirmed: bool` de confianza
-   ciega.
-3. **Raíz permitida por defecto para `FileSystemAgent`/`DatabaseAgent`**
-   — el mecanismo (`resolve()` + `is_relative_to()`) ya está validado
-   (ver hallazgo ALTO #3); falta decidir el valor de la raíz por
-   defecto (o si no hay default y hay que configurarla explícitamente).
+   pendiente con id en Redis + `CONFIRMATION_PHRASE` verificada del lado
+   del servidor, reemplaza el `confirmed: bool` de confianza ciega.
+   Commit `9267b12`.
+3. **Raíz permitida para `FileSystemAgent`/`DatabaseAgent`** — sin
+   default, falla cerrado hasta configurar `Settings.
+   filesystem_allowed_root`. Commit `960f02d`.
+
+**Estado del hallazgo CRÍTICO #1: resuelto por completo** (bind de red +
+auth + confirmación server-side, los 3 pasos). Hallazgo ALTO #3:
+resuelto. Hallazgo ALTO #2 (whitelist de `ProcessAgent`) sigue abierto,
+deliberadamente, como bloqueante del agente de browsing — ver arriba.
