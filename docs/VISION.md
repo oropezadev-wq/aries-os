@@ -129,6 +129,19 @@ de prioridad entre ellas**:
 - **Control de dispositivos smart home**, integrando **Home Assistant**
   como backend.
 
+**Bloqueante explícito antes de sumar el agente de browsing (auditoría
+de seguridad 2026-09-23, `docs/audits/2026-09-23-security-audit.md`,
+hallazgo ALTO #2):** `ProcessAgent` no tiene whitelist de ejecutables —
+hoy es un riesgo teórico, acotado por quién puede llegar al API
+(`POST /message` sin autenticación es el hallazgo CRÍTICO #1 del mismo
+audit, con su propio arreglo en curso). Un agente de browsing cambia
+eso de raíz: un LLM eligiendo qué ejecutar con contenido web **no
+confiable** de por medio (una página que el propio agente visitó) deja
+de ser teórico y pasa a ser directamente explotable — el contenido de
+una página puede intentar manipular el plan que arma el LLM. No se
+empieza el agente de browsing sin resolver la whitelist de
+`ProcessAgent` primero (o un diseño que la vuelva innecesaria).
+
 **No se empieza ninguna de las dos hasta cumplir el criterio de éxito de
 arriba.** No es una decisión de prioridad relativa entre ellas, ni
 tampoco respecto a la Fase 2 — es una secuencia estricta: primero el
