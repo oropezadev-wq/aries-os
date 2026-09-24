@@ -67,6 +67,17 @@ class Settings(BaseSettings):
     voice_wake_word_threshold: float = Field(
         0.5, description="Score mínimo (0-1) para considerar detectada una wake word"
     )
+    voice_hotkey_enabled: bool = Field(
+        True,
+        description="Activa push-to-talk (hotkey global, además de la wake word). No cuenta para la"
+        " condición 3 del contador de la Fase 1 (docs/VISION.md) — esa exige manos libres.",
+    )
+    voice_hotkey_combo: str = Field(
+        "ctrl+alt+shift+v",
+        description="Combinación de teclas para push-to-talk (ej. 'ctrl+alt+shift+v') — ver"
+        " aries.voice.hotkey_listener.parse_hotkey_combo. Elegida rara a propósito para no pisar"
+        " atajos de Windows/VSCode/otras apps; cambiar acá si colisiona con algo en tu máquina.",
+    )
     voice_stt_model_size: str = Field(
         "small", description="Tamaño del modelo de faster-whisper a cargar (tiny/base/small/medium/large-v3)"
     )

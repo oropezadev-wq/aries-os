@@ -197,7 +197,7 @@ warn_no_return = true
 strict_optional = true
 
 [[tool.mypy.overrides]]
-module = ["pyside6.*", "faster_whisper.*", "piper.*", "sounddevice.*", "openwakeword.*", "croniter.*"]
+module = ["pyside6.*", "faster_whisper.*", "piper.*", "sounddevice.*", "openwakeword.*", "croniter.*", "onnxruntime.*"]
 ignore_missing_imports = true
 
 [tool.isort]

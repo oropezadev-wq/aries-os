@@ -29,7 +29,7 @@ from aries.agents.manager import AgentManager
 from aries.api import app, get_planner
 from aries.contracts.llm import ILLMProvider, LLMResponse
 from aries.contracts.message_bus import BusMessage, IMessageBus
-from aries.contracts.stt import ISTTProvider
+from aries.contracts.stt import ISTTProvider, STTResult
 from aries.contracts.tts import ITTSProvider, TTSResult
 from aries.contracts.wake_word import IWakeWordProvider
 from aries.events import AsyncEventBus
@@ -213,6 +213,18 @@ def _make_pipeline(
 def _clear_dependency_overrides():
     yield
     app.dependency_overrides.clear()
+
+
+@pytest.fixture(autouse=True)
+def _mock_beep(monkeypatch: pytest.MonkeyPatch):
+    """Push-to-talk: `_listen_for_activation_sync` pita de verdad
+    (`winsound.Beep`) en cada activación — sin esto, CADA test de este
+    archivo haría sonar el parlante de la máquina que corre `pytest` (y
+    lo dejaría ~300ms más lento por el bloqueo real de `winsound.Beep`).
+    Se mockea acá, autouse, en vez de en cada test individual."""
+    calls: list[tuple[int, int]] = []
+    monkeypatch.setattr("aries.voice.pipeline.winsound.Beep", lambda freq, dur: calls.append((freq, dur)))
+    return calls
 
 
 class TestVoicePipelineRunOnce:
@@ -548,3 +560,133 @@ class TestVoicePipelineConsumeRoutines:
         assert tts.synthesized == ["primera"]
         assert len(player.played) == 1
         assert bus.acked == ["3-0", "4-0"]
+
+
+class _FixedSTTProvider(ISTTProvider):
+    """STT fake que siempre transcribe el mismo texto — para tests de
+    push-to-talk que no necesitan audio real, solo que el flujo llegue
+    hasta POST /message."""
+
+    def __init__(self, text: str) -> None:
+        self._text = text
+
+    async def transcribe(self, audio, language=None, **kwargs) -> STTResult:
+        return STTResult(text=self._text, language=language)
+
+    async def is_available(self) -> bool:
+        return True
+
+    def get_model_name(self) -> str:
+        return "fake"
+
+
+def _canned_message_response(request: httpx.Request) -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={
+            "plan_id": "p1",
+            "success": True,
+            "response_text": "listo",
+            "needs_confirmation": False,
+            "confirmation_id": None,
+            "error": None,
+        },
+    )
+
+
+def _make_push_to_talk_pipeline(player: FakeSpeakerPlayer) -> VoicePipeline:
+    transport = httpx.MockTransport(_canned_message_response)
+    return VoicePipeline(
+        # `FakeWakeWordProvider.process_frame` lanza NotImplementedError a
+        # propósito: si la activación por hotkey alguna vez terminara
+        # pasando por acá, el test revienta ruidosamente en vez de pasar
+        # por casualidad — confirma "mismo punto de entrada, no un camino
+        # paralelo" (el hotkey nunca debe tocar wake_word.process_frame).
+        wake_word=FakeWakeWordProvider(),
+        stt=_FixedSTTProvider("hola aries"),
+        tts=FakeTTSProvider(),
+        listener=ScriptedListener([]),
+        player=player,
+        message_bus=FakeMessageBus(),
+        config=VoicePipelineConfig(
+            silence_duration_seconds=0.05, max_utterance_seconds=0.2, api_key=TEST_API_KEY
+        ),
+        http_client=httpx.AsyncClient(transport=transport, base_url="http://voicetest"),
+    )
+
+
+class TestPushToTalk:
+    """docs/specs/Voice.spec.md — push-to-talk: misma vía de activación
+    que la wake word (mismo punto de entrada, no un camino paralelo a
+    whisper), guarda de concurrencia (una pulsación mientras ya hay una
+    activación en curso se ignora), y beep de feedback (proceso con
+    ventana oculta, sin consola visible)."""
+
+    @pytest.mark.asyncio
+    async def test_hotkey_activation_uses_same_flow_as_wake_word(self) -> None:
+        player = FakeSpeakerPlayer()
+        pipeline = _make_push_to_talk_pipeline(player)
+        pipeline._hotkey_activation.set()  # simula la pulsación — HotkeyListener real ya se prueba en test_hotkey_listener.py
+
+        await pipeline.run_once()
+
+        assert player.played == [b"RIFF....WAVEfake"]  # la respuesta de FakeTTSProvider — el flujo llegó hasta el final
+
+    @pytest.mark.asyncio
+    async def test_hotkey_activation_is_cleared_after_use(self) -> None:
+        player = FakeSpeakerPlayer()
+        pipeline = _make_push_to_talk_pipeline(player)
+        pipeline._hotkey_activation.set()
+
+        await pipeline.run_once()
+
+        assert not pipeline._hotkey_activation.is_set()
+
+    @pytest.mark.asyncio
+    async def test_idle_is_set_again_after_a_turn_completes(self) -> None:
+        player = FakeSpeakerPlayer()
+        pipeline = _make_push_to_talk_pipeline(player)
+        pipeline._hotkey_activation.set()
+
+        await pipeline.run_once()
+
+        assert pipeline._idle.is_set()  # vuelve a aceptar activaciones
+
+    def test_on_hotkey_press_sets_activation_when_idle(self) -> None:
+        player = FakeSpeakerPlayer()
+        pipeline = _make_push_to_talk_pipeline(player)
+
+        pipeline._on_hotkey_press()
+
+        assert pipeline._hotkey_activation.is_set()
+
+    def test_on_hotkey_press_ignored_while_busy(self) -> None:
+        # Guarda de concurrencia: una pulsación mientras el pipeline ya
+        # está procesando (no en la espera de activación) se descarta
+        # directo, no se encola para la próxima vez que quede libre.
+        player = FakeSpeakerPlayer()
+        pipeline = _make_push_to_talk_pipeline(player)
+        pipeline._idle.clear()  # simula "ya hay una activación en curso"
+
+        pipeline._on_hotkey_press()
+
+        assert not pipeline._hotkey_activation.is_set()
+
+    @pytest.mark.asyncio
+    async def test_beeps_play_on_activation_start_and_stop(self, _mock_beep) -> None:
+        player = FakeSpeakerPlayer()
+        pipeline = _make_push_to_talk_pipeline(player)
+        pipeline._hotkey_activation.set()
+
+        await pipeline.run_once()
+
+        assert len(_mock_beep) == 2
+        start_freq, _ = _mock_beep[0]
+        stop_freq, _ = _mock_beep[1]
+        assert start_freq != stop_freq  # tonos distinguibles, empezar vs cortar
+
+    def test_no_hotkey_listener_built_when_combo_not_configured(self) -> None:
+        player = FakeSpeakerPlayer()
+        pipeline = _make_push_to_talk_pipeline(player)  # config default: hotkey_combo=None
+
+        assert pipeline._hotkey_listener is None

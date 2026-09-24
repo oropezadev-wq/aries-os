@@ -43,7 +43,9 @@ def _build_pipeline(settings: Settings) -> VoicePipeline:
         config_path=settings.voice_tts_config_path or None,
     )
     config = VoicePipelineConfig(
-        api_base_url=settings.voice_api_base_url, api_key=settings.api_key.get_secret_value()
+        api_base_url=settings.voice_api_base_url,
+        api_key=settings.api_key.get_secret_value(),
+        hotkey_combo=settings.voice_hotkey_combo if settings.voice_hotkey_enabled else None,
     )
 
     audio_device: int | str | None = settings.voice_audio_device or None

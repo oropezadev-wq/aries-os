@@ -13,9 +13,11 @@ exclusivo de Voice — ver `Planner.confirm()`.
 from __future__ import annotations
 
 import asyncio
+import threading
+import winsound
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 import httpx
@@ -28,6 +30,7 @@ from ..exceptions import VoiceError
 from ..logging import get_logger
 from ..routines.manager import ROUTINES_TOPIC
 from .audio_io import MicrophoneListener, SpeakerPlayer, record_until_silence
+from .hotkey_listener import HotkeyListener
 
 # docs/specs/MessageBus.spec.md sección 6.4: nombre de consumidor fijo, no
 # hostname+pid — un nombre que cambia en cada reinicio huérfana el PEL del
@@ -38,6 +41,16 @@ ROUTINES_CONSUMER_NAME = "main"
 
 _NO_ENTENDI = "No te escuché bien, decime de nuevo."
 _SIN_RESPUESTA_TTS = "Listo."
+
+# Push-to-talk (docs/specs/Voice.spec.md): el proceso corre con ventana
+# oculta, sin consola visible — sin esto no hay NINGUNA señal de que
+# empezó/dejó de escuchar. `winsound.Beep` (stdlib, solo Windows — todo
+# el proyecto ya es Windows-only) en vez de sintetizar un tono vía
+# TTS/Piper: no hace falta esa dependencia para un beep, y es
+# prácticamente instantáneo (sin la latencia de una síntesis real).
+_BEEP_START_FREQUENCY_HZ = 880
+_BEEP_STOP_FREQUENCY_HZ = 440
+_BEEP_DURATION_MS = 150
 
 
 @dataclass
@@ -54,6 +67,11 @@ class VoicePipelineConfig:
     # cada intento. Vacío = mismo comportamiento que el server con
     # Settings.api_key vacía (falla, no un default silencioso).
     api_key: str = ""
+    # Push-to-talk (docs/specs/Voice.spec.md): combinación tipo
+    # "ctrl+alt+shift+v" (ver `hotkey_listener.parse_hotkey_combo`) — una
+    # rara a propósito, para no pisar atajos de Windows/VSCode/otras
+    # apps. None = deshabilitado (default: sin hotkey, solo wake word).
+    hotkey_combo: str | None = None
 
 
 class VoicePipeline:
@@ -92,6 +110,35 @@ class VoicePipeline:
         self._http_client = http_client
         self._owns_http_client = http_client is None
 
+        # Push-to-talk: mismo punto de entrada que la wake word (ver
+        # `_listen_for_activation_sync`), no un camino paralelo — el
+        # hotkey solo pone un `threading.Event`, el resto (grabar, STT,
+        # POST /message, confirmación, hablar la respuesta) es
+        # exactamente lo mismo sin importar quién activó el turno.
+        #
+        # `_idle`: en claro mientras se espera una activación (wake word
+        # O hotkey aceptan), en falso desde que se detecta la activación
+        # hasta que termina de hablar la respuesta — la guarda de
+        # concurrencia vive acá: un hotkey presionado mientras `_idle`
+        # está en falso se ignora directo en `_on_hotkey_press` (nunca
+        # llega a setear `_hotkey_activation`), no se encola para la
+        # próxima vez que el pipeline quede libre.
+        self._idle = threading.Event()
+        self._idle.set()
+        self._hotkey_activation = threading.Event()
+        self._hotkey_listener: HotkeyListener | None = None
+        if self.config.hotkey_combo:
+            self._hotkey_listener = HotkeyListener(self.config.hotkey_combo, on_press=self._on_hotkey_press)
+
+    def _on_hotkey_press(self) -> None:
+        """Corre en el hilo del listener de hotkey (Win32), NO en el
+        event loop de asyncio — por eso usa `threading.Event`, no
+        `asyncio.Event`. Debe ser rápido y no bloquear."""
+        if not self._idle.is_set():
+            self.logger.info("Hotkey ignorado: ya hay una activación en curso")
+            return
+        self._hotkey_activation.set()
+
     async def close(self) -> None:
         if self._owns_http_client and self._http_client is not None:
             await self._http_client.aclose()
@@ -111,21 +158,36 @@ class VoicePipeline:
     # ------------------------------------------------------------------
 
     def _listen_for_activation_sync(self) -> bytes:
-        """Bloquea hasta detectar una wake word y graba la utterance en el
-        MISMO stream ya abierto (sin reabrir) para no perder los primeros
-        frames de la orden justo después de la wake word."""
+        """Bloquea hasta detectar una wake word O que se presione el
+        hotkey de push-to-talk (lo que ocurra primero — misma vía de
+        activación para los dos, no un camino paralelo: ambos terminan
+        acá y de acá en más el flujo es idéntico) y graba la utterance en
+        el MISMO stream ya abierto (sin reabrir) para no perder los
+        primeros frames de la orden justo después de activarse.
+
+        `self._idle` se pone en falso apenas se detecta la activación —
+        antes de grabar, no después — así que un hotkey presionado
+        mientras se está grabando (todavía no llegó a STT/HTTP) también
+        se ignora, no solo durante el procesamiento posterior."""
         with self.listener:
             self.logger.info("escuchando...")
             while True:
+                if self._hotkey_activation.is_set():
+                    self._hotkey_activation.clear()
+                    break
                 frame = self.listener.read_frame()
                 detections = self.wake_word.process_frame(frame)
                 if detections:
                     break
-            return record_until_silence(
+            self._idle.clear()
+            winsound.Beep(_BEEP_START_FREQUENCY_HZ, _BEEP_DURATION_MS)
+            audio = record_until_silence(
                 self.listener,
                 max_seconds=self.config.max_utterance_seconds,
                 silence_duration_seconds=self.config.silence_duration_seconds,
             )
+            winsound.Beep(_BEEP_STOP_FREQUENCY_HZ, _BEEP_DURATION_MS)
+            return audio
 
     def _record_utterance_sync(self, max_seconds: float) -> bytes:
         """Graba una utterance sin esperar wake word — usado para
@@ -146,7 +208,7 @@ class VoicePipeline:
         client = await self._get_http_client()
         response = await client.post("/message", json={"user_input": user_input, "session_id": session_id})
         response.raise_for_status()
-        return response.json()
+        return cast(dict[str, Any], response.json())
 
     async def _post_confirm(self, confirmation_id: str, confirmation_text: str, session_id: str) -> dict[str, Any]:
         client = await self._get_http_client()
@@ -159,7 +221,7 @@ class VoicePipeline:
             },
         )
         response.raise_for_status()
-        return response.json()
+        return cast(dict[str, Any], response.json())
 
     async def _speak(self, text: str) -> None:
         tts_result = await self.tts.synthesize(text)
@@ -225,6 +287,13 @@ class VoicePipeline:
             self.logger.error("Error de red al llamar a POST /message", error=str(error))
         except Exception as error:  # red de seguridad final — nunca debe tumbar run_forever()
             self.logger.exception("Error inesperado en el pipeline de voz", error=str(error))
+        finally:
+            # Guarda de concurrencia del hotkey (ver `_on_hotkey_press`):
+            # pase lo que pase en este turno, el pipeline vuelve a
+            # aceptar una nueva activación al terminar. Sin esto, una
+            # excepción a mitad de turno dejaría el hotkey ignorando
+            # pulsaciones para siempre.
+            self._idle.set()
 
     # ------------------------------------------------------------------
     # Consumo de rutinas proactivas (docs/specs/Routines.spec.md sección 4,
@@ -283,16 +352,33 @@ class VoicePipeline:
                 )
 
     async def run_forever(self) -> None:
-        """Corre `run_once()` (wake word) y `_consume_routines()` (rutinas
-        proactivas) como dos tasks concurrentes hasta que se cancele la
-        tarea — factible sin reescribir nada del loop de wake word:
-        `_listen_for_activation_sync` ya corre en un hilo aparte vía
+        """Corre `run_once()` (wake word + hotkey) y `_consume_routines()`
+        (rutinas proactivas) como dos tasks concurrentes hasta que se
+        cancele la tarea — factible sin reescribir nada del loop de wake
+        word: `_listen_for_activation_sync` ya corre en un hilo aparte vía
         `asyncio.to_thread`, así que el event loop principal queda libre
-        para el segundo task."""
+        para el segundo task. El listener de hotkey (si está configurado)
+        corre en un TERCER hilo propio (Win32, no asyncio — ver
+        `HotkeyListener`), arrancado/parado acá."""
         self.logger.info(
             "Pipeline de voz arrancado, esperando wake word",
             wake_words=self.wake_word.get_wake_words(),
         )
+        if self._hotkey_listener is not None:
+            try:
+                await asyncio.to_thread(self._hotkey_listener.start)
+                self.logger.info("Push-to-talk activo", combo=self.config.hotkey_combo)
+            except Exception as error:
+                # No fatal: la wake word sigue funcionando sin push-to-talk.
+                # Motivo típico: la combinación ya está tomada por otra
+                # app — no tiene sentido tumbar todo el pipeline por eso.
+                self.logger.error(
+                    "No se pudo activar el hotkey de push-to-talk, sigue solo la wake word",
+                    combo=self.config.hotkey_combo,
+                    error=str(error),
+                )
+                self._hotkey_listener = None
+
         routines_task = asyncio.create_task(self._consume_routines())
         try:
             while True:
@@ -303,4 +389,6 @@ class VoicePipeline:
                 await routines_task
             except asyncio.CancelledError:
                 pass
+            if self._hotkey_listener is not None:
+                await asyncio.to_thread(self._hotkey_listener.stop)
             await self.close()
