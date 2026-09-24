@@ -17,23 +17,32 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 
+
+# Techo de versión en TODAS las dependencias (auditoría de seguridad
+# 2026-09-23, hallazgo BAJO #6 subido a prioridad alta — mismo tipo de bug
+# que ya costó semanas con onnxruntime==1.28.0, ver el extra `voice` más
+# abajo). Política: `<siguiente_major` sobre la versión instalada/última
+# conocida al 2026-09-23 (0.x se trata como su propio "major" — techo en
+# `<1.0`), no una investigación de qué versión exacta rompe algo — el
+# objetivo es que una actualización mayor no entre nunca en silencio, no
+# predecir compatibilidad. Ver docs/audits/2026-09-23-security-audit.md.
 dependencies = [
-    "fastapi>=0.113.0",
-    "uvicorn[standard]>=0.24.0",
-    "sqlalchemy>=2.0",
-    "redis>=5.0",
-    "pydantic>=2.10",
-    "pydantic-settings>=2.1",
-    "loguru>=0.7.0",
-    "structlog>=24.0",
-    "python-dotenv>=1.0",
-    "httpx>=0.27.0",
-    "click>=8.1",
-    "typer>=0.9",
+    "fastapi>=0.113.0,<1.0",
+    "uvicorn[standard]>=0.24.0,<1.0",
+    "sqlalchemy>=2.0,<3.0",
+    "redis>=5.0,<9.0",
+    "pydantic>=2.10,<3.0",
+    "pydantic-settings>=2.1,<3.0",
+    "loguru>=0.7.0,<1.0",
+    "structlog>=24.0,<27.0",
+    "python-dotenv>=1.0,<2.0",
+    "httpx>=0.27.0,<1.0",
+    "click>=8.1,<9.0",
+    "typer>=0.9,<1.0",
     # docs/specs/Routines.spec.md sección 1: parseo de cron + cálculo de
     # próxima ejecución para RoutineManager — sin motor de scheduling
     # propio (eso lo sigue manejando Kernel.run()).
-    "croniter>=2.0",
+    "croniter>=2.0,<7.0",
     # No es solo para el extra `voice`: `contracts/wake_word.py` importa
     # numpy a nivel de módulo, y `contracts/__init__.py` lo importa de
     # forma incondicional — cualquier `from aries.contracts.<lo que sea>
@@ -41,31 +50,36 @@ dependencies = [
     # (así funciona la inicialización de paquetes en Python), así que
     # numpy hace falta para importar `aries.contracts` en general, no solo
     # para correr `voice/` de verdad.
-    "numpy>=1.24",
+    "numpy>=1.24,<3.0",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.0",
-    "pytest-asyncio>=0.22",
-    "pytest-cov>=4.1",
-    "black>=24.0",
-    "ruff>=0.1",
-    "mypy>=1.9",
-    "isort>=5.13",
-    "mkdocs>=1.5",
-    "mkdocs-material>=10.0",
-    "bandit>=1.8",
-    "safety>=2.0",
-    "pre-commit>=3.5",
+    "pytest>=8.0,<10.0",
+    "pytest-asyncio>=0.22,<2.0",
+    "pytest-cov>=4.1,<8.0",
+    "black>=24.0,<27.0",
+    "ruff>=0.1,<1.0",
+    "mypy>=1.9,<3.0",
+    "isort>=5.13,<10.0",
+    "mkdocs>=1.5,<2.0",
+    # OJO: el piso ">=10.0" parece roto — la última versión publicada de
+    # mkdocs-material al 2026-09-23 es 9.7.7, o sea este rango nunca fue
+    # satisfacible (probable typo por "9.0" al declararlo). No se corrige
+    # acá (cambiar el piso es otro tipo de fix del que se pidió — solo
+    # techo); queda flageado para que se decida aparte.
+    "mkdocs-material>=10.0,<11.0",
+    "bandit>=1.8,<2.0",
+    "safety>=2.0,<4.0",
+    "pre-commit>=3.5,<5.0",
 ]
 
 voice = [
-    "piper-tts>=1.2",
-    "faster-whisper>=0.10",
-    "sounddevice>=0.5",
-    "openwakeword>=0.6",
-    "scipy>=1.10",
+    "piper-tts>=1.2,<2.0",
+    "faster-whisper>=0.10,<2.0",
+    "sounddevice>=0.5,<1.0",
+    "openwakeword>=0.6,<1.0",
+    "scipy>=1.10,<2.0",
     # onnxruntime no está declarada por ninguna de las de arriba con techo
     # de versión (openwakeword/faster-whisper/piper-tts piden solo un
     # mínimo) — sin esto, pip resuelve siempre la última disponible.
@@ -91,22 +105,23 @@ voice = [
 # (no hacen falta para correr el pipeline en runtime, solo para entrenar el
 # .onnx una vez). Ver docs/specs/WakeWordTraining.spec.md.
 voice-training = [
-    "torch>=2.2",
-    "torchinfo>=1.8",
-    "torchmetrics>=1.3",
-    "pyyaml>=6.0",
-    "datasets>=2.19",  # streaming de FMA (audio de fondo) para negative_data/background_noise
+    "torch>=2.2,<3.0",
+    "torchinfo>=1.8,<2.0",
+    "torchmetrics>=1.3,<2.0",
+    "pyyaml>=6.0,<7.0",
+    "datasets>=2.19,<6.0",  # streaming de FMA (audio de fondo) para negative_data/background_noise
 ]
 
 desktop = [
-    "pyside6>=6.6",
-    "qt-material>=2.14",
+    "pyside6>=6.6,<7.0",
+    "qt-material>=2.14,<3.0",
 ]
 
 docs = [
-    "mkdocs>=1.5",
-    "mkdocs-material>=10.0",
-    "mkdocstrings[python]>=0.24",
+    "mkdocs>=1.5,<2.0",
+    # Mismo piso posiblemente roto que en el extra `dev` — ver nota ahí.
+    "mkdocs-material>=10.0,<11.0",
+    "mkdocstrings[python]>=0.24,<2.0",
 ]
 
 [project.urls]
