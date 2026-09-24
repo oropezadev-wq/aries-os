@@ -77,6 +77,25 @@ sin login, sin token, sin rate limit.
   mismo paso que se acababa de aprobar (loop) — ver el commit para el
   detalle.
 
+  **Nota del supervisor (2026-09-24, no bloqueante):** la acción
+  pendiente vive en Redis — si Redis está caído, ninguna acción que
+  requiera confirmación puede ofrecerla (`Planner._execute_plan`
+  devuelve error explícito en vez de `needs_confirmation`, ver el
+  commit). **Esto es el comportamiento esperado (falla cerrado), no un
+  bug** si llega a pasar en producción: sin Redis no hay dónde guardar
+  la acción pendiente de forma segura, así que la alternativa sería
+  ejecutar sin confirmar o inventar un mecanismo paralelo — ninguna de
+  las dos es aceptable. Queda anotado acá para que, si el día de mañana
+  aparece un reporte de "las confirmaciones no andan", lo primero que
+  se revise sea el estado de Redis, no que se trate como una regresión
+  nueva del Planner.
+
+  **Verificado (2026-09-24):** `.env` sigue en `.gitignore` y sin
+  trackear en git; no hay ningún logging de `api_key`/`X-API-Key` en el
+  código (`require_api_key` solo compara, nunca loguea; VoicePipeline
+  solo lo pone en un header) ni en el `access_log` default de uvicorn
+  (no incluye headers).
+
 ### ALTO — 2. `ProcessAgent` sin whitelist de ejecutables
 
 **Archivo:** `src/aries/agents/process/agent.py`.
