@@ -34,14 +34,14 @@ from aries.contracts.tts import ITTSProvider, TTSResult
 from aries.contracts.wake_word import IWakeWordProvider
 from aries.events import AsyncEventBus
 from aries.memory.in_memory import InMemoryStore
-from aries.planner import Planner
+from aries.planner import CONFIRMATION_PHRASE, Planner
 from aries.routines.manager import ROUTINES_TOPIC
 from aries.voice.audio_io import SAMPLE_RATE, wav_bytes_to_pcm
 from aries.voice.faster_whisper_provider import FasterWhisperProvider
-from tests.conftest import TEST_API_KEY
 from aries.voice.openwakeword_provider import OpenWakeWordProvider
-from aries.voice.pipeline import CONFIRMATION_PHRASE, VoicePipeline, VoicePipelineConfig
+from aries.voice.pipeline import VoicePipeline, VoicePipelineConfig
 from aries.voice.piper_provider import PiperProvider
+from tests.conftest import TEST_API_KEY
 
 FRAME_SIZE = 1280
 
@@ -114,7 +114,7 @@ class ScriptedListener:
         self._index += 1
         return frame
 
-    def __enter__(self) -> "ScriptedListener":
+    def __enter__(self) -> ScriptedListener:
         return self
 
     def __exit__(self, *exc_info: object) -> None:
@@ -259,7 +259,7 @@ class TestVoicePipelineRunOnce:
 
     @pytest.mark.asyncio
     async def test_confirmation_flow_with_exact_phrase_retries_confirmed(
-        self, real_providers, whisper_small_model, tmp_path
+        self, real_providers, whisper_small_model, tmp_path, confirmation_redis
     ) -> None:
         target = tmp_path / "importante.txt"
         target.write_text("no me borres", encoding="utf-8")
@@ -269,17 +269,18 @@ class TestVoicePipelineRunOnce:
                 "steps": [{"agent_name": "filesystem", "action": "delete_file", "parameters": {"path": str(target)}}],
             }
         )
-        # `Planner.handle()` re-parsea el intent desde cero en cada
-        # llamada (no recuerda el plan entre el pedido sin confirmar y el
-        # reintento confirmado) — el pipeline hace 2 POST /message
-        # (confirmed=False, después confirmed=True), así que hacen falta
-        # 2 parseos de intención + 1 respuesta de Brain (la 1ra llamada,
-        # al pedir confirmación, no llega a invocar a Brain).
+        # Auditoría de seguridad 2026-09-23, hallazgo CRÍTICO #1: ahora
+        # `Planner.confirm()` NO reparsea el intent — resume el plan
+        # guardado en Redis con el paso que se acaba de aprobar. El
+        # pipeline hace `POST /message` (1er parseo de intención) y
+        # después `POST /message/confirm` (sin LLM de por medio, solo la
+        # respuesta final de Brain) — 1 parseo de intención + 1 respuesta.
         fake_planner = Planner(
-            llm_provider=FakeLLMProvider([intent, intent, "Listo, lo borré."]),
+            llm_provider=FakeLLMProvider([intent, "Listo, lo borré."]),
             agent_manager=AgentManager(filesystem_allowed_root=str(tmp_path)),
             event_bus=AsyncEventBus(),
             memory=InMemoryStore(),
+            redis_client=confirmation_redis,
         )
         app.dependency_overrides[get_planner] = lambda: fake_planner
 
@@ -319,7 +320,9 @@ class TestVoicePipelineRunOnce:
         assert len(player.played) == 2
 
     @pytest.mark.asyncio
-    async def test_confirmation_flow_wrong_phrase_cancels_action(self, real_providers, tmp_path) -> None:
+    async def test_confirmation_flow_wrong_phrase_cancels_action(
+        self, real_providers, tmp_path, confirmation_redis
+    ) -> None:
         target = tmp_path / "importante.txt"
         target.write_text("no me borres", encoding="utf-8")
         intent = json.dumps(
@@ -330,9 +333,10 @@ class TestVoicePipelineRunOnce:
         )
         fake_planner = Planner(
             llm_provider=FakeLLMProvider([intent]),
-            agent_manager=AgentManager(),
+            agent_manager=AgentManager(filesystem_allowed_root=str(tmp_path)),
             event_bus=AsyncEventBus(),
             memory=InMemoryStore(),
+            redis_client=confirmation_redis,
         )
         app.dependency_overrides[get_planner] = lambda: fake_planner
 

@@ -15,6 +15,7 @@ import json
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -56,7 +57,10 @@ class FakeLLMProvider(ILLMProvider):
 
 
 def _override_planner(
-    responses: list[str], memory: InMemoryStore | None = None, filesystem_allowed_root: str = ""
+    responses: list[str],
+    memory: InMemoryStore | None = None,
+    filesystem_allowed_root: str = "",
+    redis_client: object | None = None,
 ) -> Planner:
     """Sobreescribe `get_planner()` con un Planner fijo — la MISMA instancia
     para todas las requests hasta que se limpie el override (fixture
@@ -69,12 +73,18 @@ def _override_planner(
     `filesystem_allowed_root` (default "" = sin configurar): tests que
     ejercitan FileSystemAgent/DatabaseAgent de verdad tienen que pasar
     `str(tmp_path)` — auditoría de seguridad 2026-09-23, hallazgo ALTO #3,
-    esos dos agentes fallan cerrado sin una raíz configurada."""
+    esos dos agentes fallan cerrado sin una raíz configurada.
+
+    `redis_client` (default None): tests que ejercitan el flujo de
+    confirmación de verdad (`needs_confirmation`/`POST /message/confirm`)
+    tienen que pasar la fixture `confirmation_redis` — hallazgo CRÍTICO #1,
+    sin cliente de Redis el Planner no puede ofrecer confirmación."""
     fake_planner = Planner(
         llm_provider=FakeLLMProvider(responses),
         agent_manager=AgentManager(filesystem_allowed_root=filesystem_allowed_root),
         event_bus=AsyncEventBus(),
         memory=memory if memory is not None else InMemoryStore(),
+        redis_client=redis_client,
     )
     app.dependency_overrides[get_planner] = lambda: fake_planner
     return fake_planner
@@ -182,7 +192,9 @@ class TestPostMessageEndToEnd:
         assert body["error"] is None
         assert target.read_text(encoding="utf-8") == "hola desde el endpoint"
 
-    def test_destructive_action_requires_confirmation_via_http(self, tmp_path: Path) -> None:
+    def test_destructive_action_requires_confirmation_via_http(
+        self, tmp_path: Path, confirmation_redis_factory
+    ) -> None:
         target = tmp_path / "importante.txt"
         target.write_text("no me borres", encoding="utf-8")
         intent = json.dumps(
@@ -193,7 +205,7 @@ class TestPostMessageEndToEnd:
                 ],
             }
         )
-        _override_planner([intent])
+        _override_planner([intent], redis_client=confirmation_redis_factory())
         client = TestClient(app, headers=_AUTH_HEADERS)
 
         response = client.post("/message", json={"user_input": "borra el archivo importante"})
@@ -202,9 +214,25 @@ class TestPostMessageEndToEnd:
         body = response.json()
         assert body["success"] is False
         assert body["needs_confirmation"] is True
+        assert body["confirmation_id"] is not None
         assert target.exists()
 
-    def test_confirmed_true_executes_destructive_action_via_http(self, tmp_path: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_confirmed_via_http_executes_destructive_action(
+        self, tmp_path: Path, confirmation_redis
+    ) -> None:
+        # Auditoría de seguridad 2026-09-23, hallazgo CRÍTICO #1: ya no hay
+        # `confirmed: bool` — la confirmación es un segundo POST a
+        # /message/confirm con el `confirmation_id` que devolvió el primero
+        # y la frase exacta, verificada del lado del servidor.
+        #
+        # `httpx.AsyncClient`+`ASGITransport` en vez de `TestClient` (sync):
+        # `TestClient` corre cada `.post()` en su propio loop interno —
+        # reusar el mismo cliente de Redis async entre dos llamadas
+        # separadas revienta con "Event loop is closed" en la segunda
+        # (verificado empíricamente). `ASGITransport` corre en el mismo
+        # loop que el test (`pytest.mark.asyncio`), sin ese problema —
+        # mismo patrón ya establecido en `tests/unit/test_voice_pipeline.py`.
         target = tmp_path / "importante.txt"
         target.write_text("no me borres", encoding="utf-8")
         intent = json.dumps(
@@ -215,17 +243,66 @@ class TestPostMessageEndToEnd:
                 ],
             }
         )
-        _override_planner([intent, "Listo, se borró."], filesystem_allowed_root=str(tmp_path))
-        client = TestClient(app, headers=_AUTH_HEADERS)
-
-        response = client.post(
-            "/message", json={"user_input": "borra el archivo importante", "confirmed": True}
+        _override_planner(
+            [intent, "Listo, se borró."], filesystem_allowed_root=str(tmp_path), redis_client=confirmation_redis
         )
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://testserver", headers=_AUTH_HEADERS
+        ) as client:
+            first = await client.post("/message", json={"user_input": "borra el archivo importante"})
+            assert first.json()["needs_confirmation"] is True
+            confirmation_id = first.json()["confirmation_id"]
+
+            response = await client.post(
+                "/message/confirm",
+                json={"confirmation_id": confirmation_id, "confirmation_text": "confirmo"},
+            )
 
         assert response.status_code == 200
         body = response.json()
         assert body["success"] is True
         assert not target.exists()
+
+    @pytest.mark.asyncio
+    async def test_confirm_with_wrong_phrase_via_http_does_not_execute(
+        self, tmp_path: Path, confirmation_redis
+    ) -> None:
+        target = tmp_path / "importante.txt"
+        target.write_text("no me borres", encoding="utf-8")
+        intent = json.dumps(
+            {
+                "intent": "borrar archivo",
+                "steps": [
+                    {"agent_name": "filesystem", "action": "delete_file", "parameters": {"path": str(target)}}
+                ],
+            }
+        )
+        _override_planner([intent], filesystem_allowed_root=str(tmp_path), redis_client=confirmation_redis)
+
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://testserver", headers=_AUTH_HEADERS
+        ) as client:
+            first = await client.post("/message", json={"user_input": "borra el archivo importante"})
+            confirmation_id = first.json()["confirmation_id"]
+
+            response = await client.post(
+                "/message/confirm",
+                json={"confirmation_id": confirmation_id, "confirmation_text": "no, de ninguna manera"},
+            )
+
+        assert response.status_code == 200
+        assert response.json()["success"] is False
+        assert target.exists()
+
+    def test_confirm_without_api_key_is_rejected(self) -> None:
+        client = TestClient(app)  # sin X-API-Key
+
+        response = client.post(
+            "/message/confirm", json={"confirmation_id": "algun-id", "confirmation_text": "confirmo"}
+        )
+
+        assert response.status_code == 401
 
     def test_unsupported_request_returns_graceful_failure_not_500(self) -> None:
         intent = json.dumps({"intent": "bailar", "steps": []})

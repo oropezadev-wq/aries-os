@@ -1,32 +1,33 @@
 """voice/pipeline.py — orquesta el flujo completo de Voice: wake word ->
-captura -> STT -> `POST /message` (ya existente, sin cambios) ->
-confirmación (si hace falta) -> TTS -> reproducción.
+captura -> STT -> `POST /message` -> confirmación (si hace falta, vía
+`POST /message/confirm`) -> TTS -> reproducción.
 
 Decisión 2 de `docs/specs/Voice.spec.md`: este pipeline corre como un
 proceso cliente HTTP más de la API — no se agregó ningún endpoint nuevo
-en `api.py`, ni se tocó `Planner`/`Brain`/`Kernel`.
+en `api.py` para el ciclo básico, ni se tocó `Brain`/`Kernel`. La
+confirmación sí sumó un endpoint (`POST /message/confirm`, auditoría de
+seguridad 2026-09-23, hallazgo CRÍTICO #1) porque dejó de ser un detalle
+exclusivo de Voice — ver `Planner.confirm()`.
 """
 
 from __future__ import annotations
 
 import asyncio
-import re
-import unicodedata
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Optional
+from typing import Any
 from uuid import uuid4
 
 import httpx
 
-from ..exceptions import VoiceError
-from ..logging import get_logger
-from ..routines.manager import ROUTINES_TOPIC
-from .audio_io import MicrophoneListener, SpeakerPlayer, record_until_silence
 from ..contracts.message_bus import IMessageBus
 from ..contracts.stt import ISTTProvider
 from ..contracts.tts import ITTSProvider
 from ..contracts.wake_word import IWakeWordProvider
+from ..exceptions import VoiceError
+from ..logging import get_logger
+from ..routines.manager import ROUTINES_TOPIC
+from .audio_io import MicrophoneListener, SpeakerPlayer, record_until_silence
 
 # docs/specs/MessageBus.spec.md sección 6.4: nombre de consumidor fijo, no
 # hostname+pid — un nombre que cambia en cada reinicio huérfana el PEL del
@@ -35,22 +36,8 @@ from ..contracts.wake_word import IWakeWordProvider
 ROUTINES_CONSUMER_GROUP = "voice-pipeline"
 ROUTINES_CONSUMER_NAME = "main"
 
-# Decisión 5 de Voice.spec.md: frase de confirmación EXACTA, no un "sí"
-# suelto — mitiga (sin eliminar del todo) el riesgo de que STT transcriba
-# mal una respuesta corta y ambigua.
-CONFIRMATION_PHRASE = "confirmo"
-
 _NO_ENTENDI = "No te escuché bien, decime de nuevo."
-_ACCION_CANCELADA = "No escuché la confirmación exacta, cancelo la acción."
 _SIN_RESPUESTA_TTS = "Listo."
-
-
-def _normalize_confirmation_text(text: str) -> str:
-    """Minúsculas, sin acentos ni puntuación — para no fallar por un signo
-    de puntuación o mayúscula fantasma de la transcripción."""
-    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
-    text = re.sub(r"[^a-z0-9\s]", "", text.lower())
-    return text.strip()
 
 
 @dataclass
@@ -58,7 +45,7 @@ class VoicePipelineConfig:
     """Configuración del pipeline de Voice."""
 
     api_base_url: str = "http://127.0.0.1:8000"
-    language: Optional[str] = "es"
+    language: str | None = "es"
     max_utterance_seconds: float = 10.0
     silence_duration_seconds: float = 1.0
     confirmation_timeout_seconds: float = 8.0
@@ -87,8 +74,8 @@ class VoicePipeline:
         listener: MicrophoneListener,
         player: SpeakerPlayer,
         message_bus: IMessageBus,
-        config: Optional[VoicePipelineConfig] = None,
-        http_client: Optional[httpx.AsyncClient] = None,
+        config: VoicePipelineConfig | None = None,
+        http_client: httpx.AsyncClient | None = None,
     ) -> None:
         self.wake_word = wake_word
         self.stt = stt
@@ -155,11 +142,21 @@ class VoicePipeline:
     # HTTP: cliente de POST /message, igual que cualquier otro consumidor
     # ------------------------------------------------------------------
 
-    async def _post_message(self, user_input: str, session_id: str, confirmed: bool) -> dict[str, Any]:
+    async def _post_message(self, user_input: str, session_id: str) -> dict[str, Any]:
+        client = await self._get_http_client()
+        response = await client.post("/message", json={"user_input": user_input, "session_id": session_id})
+        response.raise_for_status()
+        return response.json()
+
+    async def _post_confirm(self, confirmation_id: str, confirmation_text: str, session_id: str) -> dict[str, Any]:
         client = await self._get_http_client()
         response = await client.post(
-            "/message",
-            json={"user_input": user_input, "session_id": session_id, "confirmed": confirmed},
+            "/message/confirm",
+            json={
+                "confirmation_id": confirmation_id,
+                "confirmation_text": confirmation_text,
+                "session_id": session_id,
+            },
         )
         response.raise_for_status()
         return response.json()
@@ -169,27 +166,31 @@ class VoicePipeline:
         await asyncio.to_thread(self.player.play_wav, tts_result.audio)
 
     # ------------------------------------------------------------------
-    # Confirmación de acciones destructivas (decisión 5)
+    # Confirmación de acciones destructivas (auditoría de seguridad
+    # 2026-09-23, hallazgo CRÍTICO #1 — server-side, ver Planner.confirm())
     # ------------------------------------------------------------------
 
-    async def _handle_confirmation(
-        self, user_text: str, session_id: str, response: dict[str, Any]
-    ) -> dict[str, Any]:
+    async def _handle_confirmation(self, session_id: str, response: dict[str, Any]) -> dict[str, Any]:
+        """El servidor ya dejó la acción pendiente y devolvió
+        `confirmation_id` + un `error` que incluye la frase exacta a decir
+        (`Planner._execute_plan`). Este pipeline ya NO decide si la frase
+        coincide — graba, transcribe, y manda lo que escuchó tal cual;
+        `Planner.confirm()` es quien compara, del lado del servidor."""
         warning = response.get("error") or "Se necesita confirmación para continuar."
-        await self._speak(f"{warning} Decí '{CONFIRMATION_PHRASE}' para continuar.")
+        await self._speak(warning)
+
+        confirmation_id = response.get("confirmation_id")
+        if not confirmation_id:
+            # El servidor pidió confirmación pero no dio un id (ej. Redis
+            # no disponible, ver Planner._execute_plan) — no hay nada que
+            # confirmar, se corta acá.
+            return response
 
         confirmation_audio = await asyncio.to_thread(
             self._record_utterance_sync, self.config.confirmation_timeout_seconds
         )
         confirmation_result = await self.stt.transcribe(confirmation_audio, language=self.config.language)
-        heard = _normalize_confirmation_text(confirmation_result.text)
-
-        if heard != CONFIRMATION_PHRASE:
-            self.logger.info("Confirmación por voz no coincide, se cancela la acción", heard=heard)
-            await self._speak(_ACCION_CANCELADA)
-            return response
-
-        return await self._post_message(user_text, session_id, confirmed=True)
+        return await self._post_confirm(confirmation_id, confirmation_result.text, session_id)
 
     # ------------------------------------------------------------------
     # Ciclo completo
@@ -211,10 +212,10 @@ class VoicePipeline:
                 return
 
             self.logger.info("Utterance transcripta", text=user_text, session_id=session_id)
-            response = await self._post_message(user_text, session_id, confirmed=False)
+            response = await self._post_message(user_text, session_id)
 
             if response.get("needs_confirmation"):
-                response = await self._handle_confirmation(user_text, session_id, response)
+                response = await self._handle_confirmation(session_id, response)
 
             text_to_speak = response.get("response_text") or response.get("error") or _SIN_RESPUESTA_TTS
             await self._speak(text_to_speak)

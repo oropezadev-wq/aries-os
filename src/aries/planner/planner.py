@@ -20,10 +20,12 @@ viviendo en `metadata`, nunca en un campo dedicado (decisión 1).
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import uuid
 from typing import Any
 
+import redis.asyncio as redis_asyncio
 from pydantic import ValidationError
 from structlog.stdlib import BoundLogger
 
@@ -45,10 +47,17 @@ from .events import (
     PlanCreatedEvent,
     PlanExecutedEvent,
 )
-from .models import ParsedIntent, PlanExecutionResult, PlannedStep
+from .models import (
+    CONFIRMATION_PHRASE,
+    ParsedIntent,
+    PlanExecutionResult,
+    PlannedStep,
+    normalize_confirmation_text,
+)
 
 _MAX_INTENT_ATTEMPTS = 2  # intento inicial + 1 reintento de corrección (decisión 2)
 _RECENT_CONTEXT_LIMIT = 5  # últimos N intercambios de la sesión que se incluyen en el prompt
+_PENDING_CONFIRMATION_KEY_PREFIX = "aries:pending_confirmation:"
 
 
 class Planner:
@@ -60,25 +69,36 @@ class Planner:
         agent_manager: AgentManager,
         event_bus: IEventBus,
         memory: IMemory,
+        redis_client: redis_asyncio.Redis | None = None,
+        pending_confirmation_ttl_seconds: float = 120.0,
     ) -> None:
         self.llm_provider = llm_provider
         self.agent_manager = agent_manager
         self.event_bus = event_bus
         self.memory = memory
+        # Auditoría de seguridad 2026-09-23, hallazgo CRÍTICO #1: dónde vive
+        # una acción pendiente de confirmación entre el pedido original y
+        # `confirm()`. Opcional (default None) para no romper la
+        # construcción de un Planner en contextos que no ejercitan
+        # confirmación — sin cliente, cualquier acción que la necesite
+        # falla con un error explícito en vez de fingir que puede
+        # confirmarse (ver `_execute_plan`).
+        self._redis_client = redis_client
+        self._pending_confirmation_ttl_seconds = pending_confirmation_ttl_seconds
         self.logger: BoundLogger = get_logger(self.__class__.__name__)
 
-    async def handle(
-        self,
-        user_input: str,
-        session_id: str | None = None,
-        confirmed: bool = False,
-    ) -> PlanExecutionResult:
-        """Punto de entrada único del Planner. Nunca lanza excepciones."""
+    async def handle(self, user_input: str, session_id: str | None = None) -> PlanExecutionResult:
+        """Punto de entrada único para un pedido NUEVO del usuario. Nunca
+        lanza excepciones. Ya no acepta `confirmed: bool` (auditoría de
+        seguridad 2026-09-23, hallazgo CRÍTICO #1) — una acción que
+        necesita confirmación se confirma vía `confirm()`, nunca
+        reafirmando este mismo pedido con un flag que el propio cliente
+        controla sin que medie ninguna verificación real."""
         if not isinstance(user_input, str) or not user_input.strip():
             return PlanExecutionResult(plan_id="", success=False, error="user_input no puede estar vacío")
 
         try:
-            result = await self._handle_impl(user_input, session_id, confirmed)
+            result = await self._handle_impl(user_input, session_id)
         except Exception as error:  # red de seguridad final, ver docstring de clase
             self.logger.error("Error inesperado en Planner.handle", error=str(error))
             await self._safe_publish(
@@ -89,9 +109,75 @@ class Planner:
         await self._remember_exchange(user_input, session_id, result)
         return result
 
-    async def _handle_impl(
-        self, user_input: str, session_id: str | None, confirmed: bool
+    async def confirm(
+        self, confirmation_id: str, confirmation_text: str, session_id: str | None = None
     ) -> PlanExecutionResult:
+        """Confirma (o rechaza) una acción pendiente de `handle()`. Nunca
+        lanza excepciones — mismo criterio que `handle()`.
+
+        Auditoría de seguridad 2026-09-23, hallazgo CRÍTICO #1: el servidor
+        NUNCA acepta una confirmación que el cliente simplemente afirme —
+        `confirmation_id` referencia una acción concreta ya propuesta
+        (guardada en Redis, de un solo uso, con TTL — `_pop_pending_confirmation`
+        la borra al leerla, así que un id ya usado o vencido no sirve dos
+        veces), y `confirmation_text` se compara acá, del lado del
+        servidor, contra `CONFIRMATION_PHRASE` — la MISMA regla que ya
+        exigía la voz (antes solo la verificaba `VoicePipeline`, nunca el
+        servidor; ver `docs/specs/Voice.spec.md` decisión 5 y
+        `docs/audits/2026-09-23-security-audit.md`)."""
+        user_input_for_memory = f'(confirmación, id={confirmation_id})'  # fallback si el id no existe/expiró
+        try:
+            result, user_input_for_memory = await self._confirm_impl(confirmation_id, confirmation_text, session_id)
+        except Exception as error:  # red de seguridad final, mismo criterio que handle()
+            self.logger.error("Error inesperado en Planner.confirm", error=str(error))
+            await self._safe_publish(
+                ErrorOccurredEvent(source="Planner.confirm", error=str(error), metadata=self._meta(session_id))
+            )
+            result = PlanExecutionResult(plan_id="", success=False, error=f"Error inesperado: {error}")
+
+        await self._remember_exchange(user_input_for_memory, session_id, result)
+        return result
+
+    async def _confirm_impl(
+        self, confirmation_id: str, confirmation_text: str, session_id: str | None
+    ) -> tuple[PlanExecutionResult, str]:
+        pending = await self._pop_pending_confirmation(confirmation_id)
+        if pending is None:
+            result = PlanExecutionResult(
+                plan_id="",
+                success=False,
+                error="La acción pendiente no existe, ya se usó, o expiró — no se ejecutó nada.",
+            )
+            return result, f"(confirmación, id={confirmation_id})"
+
+        user_input = pending["user_input"]
+        plan_id = pending["plan_id"]
+        meta = self._meta(pending.get("session_id"))
+        results = [_action_result_from_dict(d) for d in pending["completed_results"]]
+
+        if normalize_confirmation_text(confirmation_text) != CONFIRMATION_PHRASE:
+            self.logger.info("Confirmación no coincide, se cancela la acción pendiente", confirmation_id=confirmation_id)
+            result = PlanExecutionResult(
+                plan_id=plan_id,
+                success=False,
+                steps=results,
+                error="La confirmación no coincide, no se ejecutó nada.",
+            )
+            return result, user_input
+
+        remaining_steps = [PlannedStep.model_validate(d) for d in pending["remaining_steps"]]
+        result = await self._execute_plan(
+            plan_id,
+            remaining_steps,
+            user_input,
+            meta,
+            results,
+            session_id=pending.get("session_id"),
+            skip_confirmation_for_first_step=True,
+        )
+        return result, user_input
+
+    async def _handle_impl(self, user_input: str, session_id: str | None) -> PlanExecutionResult:
         plan_id = str(uuid.uuid4())
         meta = self._meta(session_id)
 
@@ -118,19 +204,19 @@ class Planner:
             PlanCreatedEvent(plan_id=plan_id, steps=steps_payload, intent=parsed.intent, metadata=meta)
         )
 
-        return await self._execute_plan(plan_id, parsed.steps, user_input, confirmed, meta)
+        return await self._execute_plan(plan_id, parsed.steps, user_input, meta, [], session_id=session_id)
 
     async def _execute_plan(
         self,
         plan_id: str,
         steps: list[PlannedStep],
         user_input: str,
-        confirmed: bool,
         meta: dict[str, Any],
+        results: list[ActionResult],
+        session_id: str | None = None,
+        skip_confirmation_for_first_step: bool = False,
     ) -> PlanExecutionResult:
-        results: list[ActionResult] = []
-
-        for step in steps:
+        for index, step in enumerate(steps):
             agent = self.agent_manager.get_agent(step.agent_name)
             if agent is None:
                 error = f"Agente desconocido: '{step.agent_name}'"
@@ -146,15 +232,46 @@ class Planner:
             # consultar — este es el único punto de extensión para cuando
             # exista un ToolRegistry real.
 
-            if agent.requires_confirmation(step.action, **step.parameters) and not confirmed:
+            # `skip_confirmation_for_first_step`: `confirm()` resume esta
+            # llamada empezando justo por el paso que el usuario acaba de
+            # aprobar — sin este chequeo, `requires_confirmation()` vuelve
+            # a dar True para ESE MISMO paso y pide confirmación de nuevo
+            # en loop. Solo aplica al primero (`index == 0`): si el plan
+            # tiene pasos siguientes que también requieren confirmación,
+            # esos sí la piden (la aprobación no se arrastra a una acción
+            # distinta de la que se confirmó).
+            needs_confirmation_now = agent.requires_confirmation(step.action, **step.parameters) and not (
+                skip_confirmation_for_first_step and index == 0
+            )
+            if needs_confirmation_now:
+                # `_execute_plan` solo se llama con pasos SIN confirmar
+                # todavía — `confirm()` resume con los pasos restantes de
+                # una acción ya aprobada, así que si UNO de esos restantes
+                # también requiere confirmación, se pide una nueva (no se
+                # arrastra la aprobación anterior a un paso distinto).
+                if self._redis_client is None:
+                    return PlanExecutionResult(
+                        plan_id=plan_id,
+                        success=False,
+                        steps=results,
+                        error=(
+                            f"La acción '{step.action}' de '{step.agent_name}' requiere confirmación, "
+                            "pero el servicio de confirmaciones (Redis) no está disponible — no se ejecutó nada."
+                        ),
+                    )
+                confirmation_id = str(uuid.uuid4())
+                await self._store_pending_confirmation(
+                    confirmation_id, plan_id, user_input, session_id, steps[index:], results
+                )
                 return PlanExecutionResult(
                     plan_id=plan_id,
                     success=False,
                     steps=results,
                     needs_confirmation=True,
+                    confirmation_id=confirmation_id,
                     error=(
-                        f"La acción '{step.action}' de '{step.agent_name}' requiere "
-                        "confirmación. Reintentá el mismo pedido con confirmed=True."
+                        f"La acción '{step.action}' de '{step.agent_name}' requiere confirmación. "
+                        f"Decí \"{CONFIRMATION_PHRASE}\" para continuar."
                     ),
                 )
 
@@ -300,8 +417,9 @@ class Planner:
         """Guarda el intercambio completo en Memory y publica
         `MemoryStoredEvent`. Se salta explícitamente cuando
         `needs_confirmation` es `True` — todavía no pasó nada que valga la
-        pena recordar como "intercambio terminado"; el próximo llamado con
-        `confirmed=True` sí se guarda. Nunca propaga excepciones."""
+        pena recordar como "intercambio terminado"; el llamado a
+        `confirm()` que efectivamente ejecute (o rechace) la acción sí se
+        guarda. Nunca propaga excepciones."""
         if result.needs_confirmation:
             return
 
@@ -344,6 +462,51 @@ class Planner:
             await self.event_bus.publish(event)
         except Exception as error:
             self.logger.error("Fallo al publicar evento del Planner", event_type=type(event).__name__, error=str(error))
+
+    # --- Confirmación server-side (auditoría de seguridad 2026-09-23) ------
+
+    async def _store_pending_confirmation(
+        self,
+        confirmation_id: str,
+        plan_id: str,
+        user_input: str,
+        session_id: str | None,
+        remaining_steps: list[PlannedStep],
+        completed_results: list[ActionResult],
+    ) -> None:
+        assert self._redis_client is not None  # narrowing: el caller ya lo chequeó
+        payload = {
+            "plan_id": plan_id,
+            "user_input": user_input,
+            "session_id": session_id,
+            "remaining_steps": [step.model_dump() for step in remaining_steps],
+            "completed_results": [dataclasses.asdict(r) for r in completed_results],
+        }
+        key = f"{_PENDING_CONFIRMATION_KEY_PREFIX}{confirmation_id}"
+        await self._redis_client.set(key, json.dumps(payload), ex=max(1, int(self._pending_confirmation_ttl_seconds)))
+
+    async def _pop_pending_confirmation(self, confirmation_id: str) -> dict[str, Any] | None:
+        """Lee y borra en un solo paso (`GETDEL`, Redis >=6.2) — de un solo
+        uso: un `confirmation_id` ya consumido (con éxito o no) no sirve
+        una segunda vez, evita reintentos/replay contra la misma acción."""
+        if self._redis_client is None:
+            return None
+        key = f"{_PENDING_CONFIRMATION_KEY_PREFIX}{confirmation_id}"
+        raw = await self._redis_client.getdel(key)
+        if raw is None:
+            return None
+        data: dict[str, Any] = json.loads(raw)
+        return data
+
+
+def _action_result_from_dict(data: dict[str, Any]) -> ActionResult:
+    return ActionResult(
+        status=ActionStatus(data["status"]),
+        output=data.get("output"),
+        error=data.get("error"),
+        data=data.get("data"),
+        execution_time_ms=data.get("execution_time_ms", 0.0),
+    )
 
 
 def _extract_json(text: str) -> str:

@@ -10,13 +10,20 @@ from .events import (
     PlanCreatedEvent,
     PlanExecutedEvent,
 )
-from .models import ParsedIntent, PlanExecutionResult, PlannedStep
+from .models import (
+    CONFIRMATION_PHRASE,
+    ParsedIntent,
+    PlanExecutionResult,
+    PlannedStep,
+    normalize_confirmation_text,
+)
 from .planner import Planner
 
 __all__ = [
     "ActionCompletedEvent",
     "ActionFailedEvent",
     "ActionStartedEvent",
+    "CONFIRMATION_PHRASE",
     "ErrorOccurredEvent",
     "IntentDetectedEvent",
     "MemoryStoredEvent",
@@ -26,4 +33,5 @@ __all__ = [
     "PlanExecutionResult",
     "PlannedStep",
     "Planner",
+    "normalize_confirmation_text",
 ]

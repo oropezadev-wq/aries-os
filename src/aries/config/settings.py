@@ -50,6 +50,12 @@ class Settings(BaseSettings):
     kernel_housekeeping_interval_seconds: float = Field(
         60.0, description="Intervalo en segundos entre ciclos de housekeeping del Kernel (ej. limpieza de memoria expirada)"
     )
+    pending_confirmation_ttl_seconds: float = Field(
+        120.0,
+        description="TTL en Redis de una acción pendiente de confirmación (Planner.confirm) — pasado este"
+        " tiempo sin confirmar, confirmation_id deja de ser válido. Auditoría de seguridad 2026-09-23,"
+        " hallazgo CRÍTICO #1.",
+    )
     plugins_dir: str = Field(
         "installed_plugins",
         description="Directorio (relativo al directorio de trabajo, o absoluto) donde Kernel.initialize() busca plugins válidos para cargar. Si no existe al arrancar, no se cargan plugins — no es un error",

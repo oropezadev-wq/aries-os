@@ -74,6 +74,12 @@ _message_bus: IMessageBus = RedisStreamsMessageBus(settings.redis_url)
 _llm_provider: ILLMProvider | None = None
 _kernel: Kernel | None = None
 _kernel_run_task: asyncio.Task[None] | None = None
+# Cliente de Redis dedicado a las acciones pendientes de confirmación
+# (`Planner.confirm()`, auditoría de seguridad 2026-09-23, hallazgo
+# CRÍTICO #1) — mismo criterio que `health_redis`: propio, no comparte
+# conexión con `RedisStreamsMessageBus`, se cierra en el `finally` de
+# `lifespan()`, nunca se reusa entre ciclos de arranque.
+_confirmation_redis: redis_asyncio.Redis | None = None
 
 
 @asynccontextmanager
@@ -98,7 +104,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     entonces cierra el `OllamaProvider` de ESTE ciclo — nunca uno
     compartido con un ciclo anterior o futuro.
     """
-    global _llm_provider, _kernel, _kernel_run_task
+    global _llm_provider, _kernel, _kernel_run_task, _confirmation_redis
 
     logger.info("API Aries arrancando", environment=settings.environment)
 
@@ -114,10 +120,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         socket_timeout=_HEALTH_CHECK_TIMEOUT_SECONDS,
         socket_connect_timeout=_HEALTH_CHECK_TIMEOUT_SECONDS,
     )
+    # Cliente de Redis dedicado a las acciones pendientes de confirmación
+    # (`Planner.confirm()`, auditoría de seguridad 2026-09-23, hallazgo
+    # CRÍTICO #1) — mismo criterio que `health_redis` arriba: propio, no
+    # comparte conexión con `RedisStreamsMessageBus` ni con `health_redis`.
+    confirmation_redis = redis_asyncio.Redis.from_url(settings.redis_url)
 
     app.state.llm_provider = llm_provider
     app.state.kernel = kernel
     app.state.health_redis = health_redis
+    app.state.confirmation_redis = confirmation_redis
 
     await kernel.initialize()
     kernel_run_task = asyncio.create_task(kernel.run())
@@ -130,6 +142,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # mismo proceso, estos globals apuntarían a la última que arrancó, no a
     # la que los llamó (ver PROGRESS.md).
     _llm_provider, _kernel, _kernel_run_task = llm_provider, kernel, kernel_run_task
+    _confirmation_redis = confirmation_redis
 
     try:
         yield
@@ -138,6 +151,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await kernel_run_task
         await llm_provider.close()
         await health_redis.aclose()
+        await confirmation_redis.aclose()
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
@@ -152,7 +166,12 @@ def get_planner() -> Planner:
     """
     assert _llm_provider is not None  # narrowing: siempre seteado por `lifespan()` al arrancar la app
     return Planner(
-        llm_provider=_llm_provider, agent_manager=_agent_manager, event_bus=_event_bus, memory=_memory
+        llm_provider=_llm_provider,
+        agent_manager=_agent_manager,
+        event_bus=_event_bus,
+        memory=_memory,
+        redis_client=_confirmation_redis,
+        pending_confirmation_ttl_seconds=settings.pending_confirmation_ttl_seconds,
     )
 
 
@@ -174,20 +193,36 @@ async def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
 
 
 class MessageRequest(BaseModel):
-    """Body de `POST /message`."""
+    """Body de `POST /message`.
+
+    Ya no tiene `confirmed: bool` (auditoría de seguridad 2026-09-23,
+    hallazgo CRÍTICO #1) — una acción que necesita confirmación se
+    confirma vía `POST /message/confirm`, con `confirmation_id` +
+    `confirmation_text`, no reafirmando este mismo pedido con un flag que
+    el cliente controlaba sin que mediara ninguna verificación real."""
 
     user_input: str
     session_id: str | None = None
-    confirmed: bool = False
+
+
+class ConfirmRequest(BaseModel):
+    """Body de `POST /message/confirm`. `confirmation_text` es lo que el
+    usuario dijo/escribió como confirmación — el servidor lo compara
+    contra la frase exacta esperada, nunca confía en un booleano."""
+
+    confirmation_id: str
+    confirmation_text: str
+    session_id: str | None = None
 
 
 class MessageResponse(BaseModel):
-    """Respuesta de `POST /message`."""
+    """Respuesta de `POST /message` y `POST /message/confirm`."""
 
     plan_id: str
     success: bool
     response_text: str | None = None
     needs_confirmation: bool = False
+    confirmation_id: str | None = None
     error: str | None = None
 
 
@@ -333,13 +368,42 @@ async def post_message(
     `MessageResponse` — cualquier fallo ya viene como `success=False` con
     `error` explicando qué pasó.
     """
-    result = await planner.handle(
-        request.user_input, session_id=request.session_id, confirmed=request.confirmed
+    result = await planner.handle(request.user_input, session_id=request.session_id)
+    return MessageResponse(
+        plan_id=result.plan_id,
+        success=result.success,
+        response_text=result.response_text,
+        needs_confirmation=result.needs_confirmation,
+        confirmation_id=result.confirmation_id,
+        error=result.error,
+    )
+
+
+@app.post(
+    "/message/confirm",
+    summary="Confirma (o rechaza) una acción pendiente de POST /message",
+    response_model=MessageResponse,
+    dependencies=[Depends(require_api_key)],
+)
+async def post_message_confirm(
+    request: ConfirmRequest, planner: Planner = Depends(get_planner)
+) -> MessageResponse:
+    """Segunda mitad del flujo de confirmación (auditoría de seguridad
+    2026-09-23, hallazgo CRÍTICO #1): `confirmation_id` referencia una
+    acción concreta que `POST /message` dejó pendiente — no re-envía el
+    pedido original, y no hay ningún campo `confirmed: bool` que el
+    cliente pueda simplemente afirmar. `Planner.confirm()` verifica
+    `confirmation_text` contra la frase de confirmación exacta del lado
+    del servidor. Nunca propaga excepciones, mismo criterio que
+    `POST /message`."""
+    result = await planner.confirm(
+        request.confirmation_id, request.confirmation_text, session_id=request.session_id
     )
     return MessageResponse(
         plan_id=result.plan_id,
         success=result.success,
         response_text=result.response_text,
         needs_confirmation=result.needs_confirmation,
+        confirmation_id=result.confirmation_id,
         error=result.error,
     )

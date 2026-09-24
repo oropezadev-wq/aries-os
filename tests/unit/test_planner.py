@@ -11,12 +11,13 @@ servidor Ollama real corriendo durante los tests.
 from __future__ import annotations
 
 import json
-import subprocess
 import sqlite3
+import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+import redis.asyncio as redis_asyncio
 
 from aries.agents.manager import AgentManager
 from aries.contracts.agent import ActionStatus
@@ -274,8 +275,128 @@ class TestEndToEndFileSystem:
 class TestConfirmation:
     @pytest.mark.asyncio
     async def test_destructive_action_without_confirmed_is_blocked(
+        self,
+        agent_manager: AgentManager,
+        memory: InMemoryStore,
+        tmp_path: Path,
+        confirmation_redis: redis_asyncio.Redis,
+    ) -> None:
+        target = tmp_path / "importante.txt"
+        target.write_text("no me borres", encoding="utf-8")
+        llm = FakeLLMProvider([_intent([{"agent_name": "filesystem", "action": "delete_file", "parameters": {"path": str(target)}}])])
+        planner = Planner(llm, agent_manager, AsyncEventBus(), memory, redis_client=confirmation_redis)
+
+        result = await planner.handle("borra el archivo importante")
+
+        assert result.success is False
+        assert result.needs_confirmation is True
+        assert result.confirmation_id is not None
+        assert target.exists()
+
+    @pytest.mark.asyncio
+    async def test_needs_confirmation_is_not_stored_in_memory(
+        self,
+        agent_manager: AgentManager,
+        memory: InMemoryStore,
+        tmp_path: Path,
+        confirmation_redis: redis_asyncio.Redis,
+    ) -> None:
+        target = tmp_path / "importante.txt"
+        target.write_text("no me borres", encoding="utf-8")
+        llm = FakeLLMProvider([_intent([{"agent_name": "filesystem", "action": "delete_file", "parameters": {"path": str(target)}}])])
+        planner = Planner(llm, agent_manager, AsyncEventBus(), memory, redis_client=confirmation_redis)
+
+        await planner.handle("borra el archivo importante", session_id="s1")
+
+        assert await memory.get_by_type("conversation") == []
+
+    @pytest.mark.asyncio
+    async def test_destructive_action_with_confirmed_executes(
+        self,
+        agent_manager: AgentManager,
+        memory: InMemoryStore,
+        tmp_path: Path,
+        confirmation_redis: redis_asyncio.Redis,
+    ) -> None:
+        # Auditoría de seguridad 2026-09-23, hallazgo CRÍTICO #1: ya no
+        # existe `confirmed=True` — la confirmación es un segundo llamado
+        # (`confirm()`) contra el `confirmation_id` que devolvió `handle()`,
+        # con la frase exacta ("confirmo"), verificada del lado del
+        # servidor.
+        target = tmp_path / "importante.txt"
+        target.write_text("no me borres", encoding="utf-8")
+        llm = FakeLLMProvider(
+            [_intent([{"agent_name": "filesystem", "action": "delete_file", "parameters": {"path": str(target)}}]), "Listo, se borró."]
+        )
+        planner = Planner(llm, agent_manager, AsyncEventBus(), memory, redis_client=confirmation_redis)
+
+        pending = await planner.handle("borra el archivo importante")
+        assert pending.needs_confirmation is True
+        result = await planner.confirm(pending.confirmation_id, "confirmo")
+
+        assert result.success is True
+        assert not target.exists()
+
+    @pytest.mark.asyncio
+    async def test_confirm_with_wrong_phrase_does_not_execute(
+        self,
+        agent_manager: AgentManager,
+        memory: InMemoryStore,
+        tmp_path: Path,
+        confirmation_redis: redis_asyncio.Redis,
+    ) -> None:
+        target = tmp_path / "importante.txt"
+        target.write_text("no me borres", encoding="utf-8")
+        llm = FakeLLMProvider([_intent([{"agent_name": "filesystem", "action": "delete_file", "parameters": {"path": str(target)}}])])
+        planner = Planner(llm, agent_manager, AsyncEventBus(), memory, redis_client=confirmation_redis)
+
+        pending = await planner.handle("borra el archivo importante")
+        result = await planner.confirm(pending.confirmation_id, "no, de ninguna manera")
+
+        assert result.success is False
+        assert target.exists()
+
+    @pytest.mark.asyncio
+    async def test_confirm_with_unknown_id_fails_gracefully(
+        self, agent_manager: AgentManager, memory: InMemoryStore, confirmation_redis: redis_asyncio.Redis
+    ) -> None:
+        llm = FakeLLMProvider([])
+        planner = Planner(llm, agent_manager, AsyncEventBus(), memory, redis_client=confirmation_redis)
+
+        result = await planner.confirm("id-que-no-existe", "confirmo")
+
+        assert result.success is False
+        assert result.error is not None
+
+    @pytest.mark.asyncio
+    async def test_confirmation_id_is_single_use(
+        self,
+        agent_manager: AgentManager,
+        memory: InMemoryStore,
+        tmp_path: Path,
+        confirmation_redis: redis_asyncio.Redis,
+    ) -> None:
+        target = tmp_path / "importante.txt"
+        target.write_text("no me borres", encoding="utf-8")
+        llm = FakeLLMProvider(
+            [_intent([{"agent_name": "filesystem", "action": "delete_file", "parameters": {"path": str(target)}}]), "Listo, se borró."]
+        )
+        planner = Planner(llm, agent_manager, AsyncEventBus(), memory, redis_client=confirmation_redis)
+
+        pending = await planner.handle("borra el archivo importante")
+        first = await planner.confirm(pending.confirmation_id, "confirmo")
+        second = await planner.confirm(pending.confirmation_id, "confirmo")
+
+        assert first.success is True
+        assert second.success is False
+
+    @pytest.mark.asyncio
+    async def test_without_redis_client_confirmation_is_refused_not_executed(
         self, agent_manager: AgentManager, memory: InMemoryStore, tmp_path: Path
     ) -> None:
+        # Sin redis_client (default None): una acción que requiere
+        # confirmación no puede ofrecerla -> falla explícito, nunca se
+        # ejecuta sola ni finge poder confirmarse.
         target = tmp_path / "importante.txt"
         target.write_text("no me borres", encoding="utf-8")
         llm = FakeLLMProvider([_intent([{"agent_name": "filesystem", "action": "delete_file", "parameters": {"path": str(target)}}])])
@@ -284,41 +405,16 @@ class TestConfirmation:
         result = await planner.handle("borra el archivo importante")
 
         assert result.success is False
-        assert result.needs_confirmation is True
+        assert result.confirmation_id is None
         assert target.exists()
 
     @pytest.mark.asyncio
-    async def test_needs_confirmation_is_not_stored_in_memory(
-        self, agent_manager: AgentManager, memory: InMemoryStore, tmp_path: Path
-    ) -> None:
-        target = tmp_path / "importante.txt"
-        target.write_text("no me borres", encoding="utf-8")
-        llm = FakeLLMProvider([_intent([{"agent_name": "filesystem", "action": "delete_file", "parameters": {"path": str(target)}}])])
-        planner = Planner(llm, agent_manager, AsyncEventBus(), memory)
-
-        await planner.handle("borra el archivo importante", session_id="s1")
-
-        assert await memory.get_by_type("conversation") == []
-
-    @pytest.mark.asyncio
-    async def test_destructive_action_with_confirmed_executes(
-        self, agent_manager: AgentManager, memory: InMemoryStore, tmp_path: Path
-    ) -> None:
-        target = tmp_path / "importante.txt"
-        target.write_text("no me borres", encoding="utf-8")
-        llm = FakeLLMProvider(
-            [_intent([{"agent_name": "filesystem", "action": "delete_file", "parameters": {"path": str(target)}}]), "Listo, se borró."]
-        )
-        planner = Planner(llm, agent_manager, AsyncEventBus(), memory)
-
-        result = await planner.handle("borra el archivo importante", confirmed=True)
-
-        assert result.success is True
-        assert not target.exists()
-
-    @pytest.mark.asyncio
     async def test_git_reset_hard_requires_confirmation_with_mode_kwarg(
-        self, agent_manager: AgentManager, memory: InMemoryStore, tmp_path: Path
+        self,
+        agent_manager: AgentManager,
+        memory: InMemoryStore,
+        tmp_path: Path,
+        confirmation_redis: redis_asyncio.Redis,
     ) -> None:
         # GitAgent.requires_confirmation acepta mode= como kwarg de extensión
         # — confirma que el Planner lo reenvía correctamente.
@@ -332,7 +428,7 @@ class TestConfirmation:
         llm = FakeLLMProvider(
             [_intent([{"agent_name": "git", "action": "reset", "parameters": {"mode": "hard", "repo_path": str(tmp_path)}}])]
         )
-        planner = Planner(llm, agent_manager, AsyncEventBus(), memory)
+        planner = Planner(llm, agent_manager, AsyncEventBus(), memory, redis_client=confirmation_redis)
 
         result = await planner.handle("resetea fuerte el repo")
 
