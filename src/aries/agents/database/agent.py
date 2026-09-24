@@ -68,8 +68,9 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 import sqlalchemy as sa
 from sqlalchemy import MetaData, Table, inspect, text

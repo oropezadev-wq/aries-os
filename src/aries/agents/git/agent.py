@@ -57,7 +57,8 @@ import asyncio
 import shutil
 import subprocess
 import time
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from structlog.stdlib import BoundLogger
 
