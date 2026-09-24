@@ -17,8 +17,11 @@ from aries.contracts.agent import ActionStatus
 
 
 @pytest.fixture(name="agent")
-def fixture_agent() -> DatabaseAgent:
-    return DatabaseAgent()
+def fixture_agent(tmp_path: Path) -> DatabaseAgent:
+    # allowed_root = tmp_path: auditoría de seguridad 2026-09-23, hallazgo
+    # ALTO #3 — sin una raíz configurada, DatabaseAgent falla cerrado en
+    # toda acción (ver TestAllowedRoot más abajo para ese caso).
+    return DatabaseAgent(allowed_root=str(tmp_path))
 
 
 @pytest.fixture(name="db_path")
@@ -489,3 +492,35 @@ class TestSQLInjection:
             "execute_query", query="SELECT * FROM users WHERE name = :n", params={"n": payload}, db_path=db_path
         )
         assert check.data["row_count"] == 1
+
+
+class TestAllowedRoot:
+    """Auditoría de seguridad 2026-09-23, hallazgo ALTO #3."""
+
+    @pytest.mark.asyncio
+    async def test_no_allowed_root_configured_fails_closed(self, db_path: str) -> None:
+        agent = DatabaseAgent()  # allowed_root="" (default) = sin configurar
+
+        result = await agent.execute("execute_query", query="SELECT * FROM users", db_path=db_path)
+
+        assert result.status == ActionStatus.FAILED
+        assert result.error is not None
+
+    @pytest.mark.asyncio
+    async def test_db_path_outside_allowed_root_is_rejected(self, tmp_path: Path, db_path: str) -> None:
+        allowed = tmp_path / "allowed"
+        allowed.mkdir()
+        agent = DatabaseAgent(allowed_root=str(allowed))  # db_path vive en tmp_path, no en tmp_path/allowed
+
+        result = await agent.execute("execute_query", query="SELECT * FROM users", db_path=db_path)
+
+        assert result.status == ActionStatus.FAILED
+        assert result.error is not None
+
+    @pytest.mark.asyncio
+    async def test_db_path_inside_allowed_root_still_works(self, tmp_path: Path, db_path: str) -> None:
+        agent = DatabaseAgent(allowed_root=str(tmp_path))
+
+        result = await agent.execute("execute_query", query="SELECT * FROM users", db_path=db_path)
+
+        assert result.status == ActionStatus.SUCCESS

@@ -13,8 +13,11 @@ from aries.contracts.agent import ActionStatus
 
 
 @pytest.fixture(name="agent")
-def fixture_agent() -> FileSystemAgent:
-    return FileSystemAgent()
+def fixture_agent(tmp_path: Path) -> FileSystemAgent:
+    # allowed_root = tmp_path: auditoría de seguridad 2026-09-23, hallazgo
+    # ALTO #3 — sin una raíz configurada, FileSystemAgent falla cerrado en
+    # toda acción (ver TestAllowedRoot más abajo para ese caso).
+    return FileSystemAgent(allowed_root=str(tmp_path))
 
 
 def _make_readonly(path: Path) -> None:
@@ -334,6 +337,58 @@ class TestMissingParameters:
     @pytest.mark.asyncio
     async def test_missing_required_path_fails_gracefully(self, agent: FileSystemAgent) -> None:
         result = await agent.execute("read_file")
+
+        assert result.status == ActionStatus.FAILED
+        assert result.error is not None
+
+
+class TestAllowedRoot:
+    """Auditoría de seguridad 2026-09-23, hallazgo ALTO #3."""
+
+    @pytest.mark.asyncio
+    async def test_no_allowed_root_configured_fails_closed(self, tmp_path: Path) -> None:
+        agent = FileSystemAgent()  # allowed_root="" (default) = sin configurar
+        file_path = tmp_path / "hello.txt"
+        file_path.write_text("hola", encoding="utf-8")
+
+        result = await agent.execute("read_file", path=str(file_path))
+
+        assert result.status == ActionStatus.FAILED
+        assert result.error is not None
+
+    @pytest.mark.asyncio
+    async def test_path_outside_allowed_root_is_rejected(self, tmp_path: Path) -> None:
+        allowed = tmp_path / "allowed"
+        allowed.mkdir()
+        outside = tmp_path / "allowed_evil"  # trampa de prefijo de texto, no de ruta real
+        outside.mkdir()
+        (outside / "secreto.txt").write_text("no deberia leerse", encoding="utf-8")
+        agent = FileSystemAgent(allowed_root=str(allowed))
+
+        result = await agent.execute("read_file", path=str(outside / "secreto.txt"))
+
+        assert result.status == ActionStatus.FAILED
+        assert result.error is not None
+
+    @pytest.mark.asyncio
+    async def test_path_inside_allowed_root_still_works(self, tmp_path: Path) -> None:
+        agent = FileSystemAgent(allowed_root=str(tmp_path))
+        file_path = tmp_path / "hello.txt"
+        file_path.write_text("hola", encoding="utf-8")
+
+        result = await agent.execute("read_file", path=str(file_path))
+
+        assert result.status == ActionStatus.SUCCESS
+        assert result.output == "hola"
+
+    @pytest.mark.asyncio
+    async def test_traversal_via_dotdot_is_rejected(self, tmp_path: Path) -> None:
+        allowed = tmp_path / "allowed"
+        allowed.mkdir()
+        (tmp_path / "secreto.txt").write_text("no deberia leerse", encoding="utf-8")
+        agent = FileSystemAgent(allowed_root=str(allowed))
+
+        result = await agent.execute("read_file", path=str(allowed / ".." / "secreto.txt"))
 
         assert result.status == ActionStatus.FAILED
         assert result.error is not None

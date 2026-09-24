@@ -230,7 +230,7 @@ class TestVoicePipelineRunOnce:
         )
         fake_planner = Planner(
             llm_provider=FakeLLMProvider([intent, "Listo, creé el archivo."]),
-            agent_manager=AgentManager(),
+            agent_manager=AgentManager(filesystem_allowed_root=str(tmp_path)),
             event_bus=AsyncEventBus(),
             memory=InMemoryStore(),
         )
@@ -272,7 +272,7 @@ class TestVoicePipelineRunOnce:
         # al pedir confirmación, no llega a invocar a Brain).
         fake_planner = Planner(
             llm_provider=FakeLLMProvider([intent, intent, "Listo, lo borré."]),
-            agent_manager=AgentManager(),
+            agent_manager=AgentManager(filesystem_allowed_root=str(tmp_path)),
             event_bus=AsyncEventBus(),
             memory=InMemoryStore(),
         )

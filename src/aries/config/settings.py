@@ -32,6 +32,21 @@ class Settings(BaseSettings):
     )
     api_port: int = Field(8000, description="Puerto de la API")
     secret_key: SecretStr = Field(SecretStr("change-me-in-production"), description="Clave secreta para la aplicación")
+    api_key: SecretStr = Field(
+        SecretStr(""),
+        description="Clave requerida (header X-API-Key) para POST /message y POST /message/confirm —"
+        " GET /health queda siempre sin autenticar (start-aries.ps1 depende de poder consultarlo sin"
+        " configuración previa). Vacío = el servidor RECHAZA todos los pedidos a esos dos endpoints"
+        " (falla cerrado, no hay default inseguro tipo 'change-me-in-production' que nadie cambia) —"
+        " ver docs/audits/2026-09-23-security-audit.md, hallazgo CRÍTICO #1.",
+    )
+    filesystem_allowed_root: str = Field(
+        "",
+        description="Raíz permitida (path absoluto) para FileSystemAgent/DatabaseAgent. Vacío = sin"
+        " raíz configurada, esos dos agentes fallan cerrado en cualquier acción de archivo/DB en vez"
+        " de operar sobre cualquier ruta del disco — ver docs/audits/2026-09-23-security-audit.md,"
+        " hallazgo ALTO #3. Se valida con Path.resolve() + is_relative_to(), nunca comparación de texto.",
+    )
     kernel_housekeeping_interval_seconds: float = Field(
         60.0, description="Intervalo en segundos entre ciclos de housekeeping del Kernel (ej. limpieza de memoria expirada)"
     )

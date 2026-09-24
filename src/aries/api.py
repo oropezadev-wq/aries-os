@@ -51,7 +51,7 @@ _HEALTH_TOTAL_TIMEOUT_SECONDS = 3.0
 # `settings.memory_db_path`) en vez de `InMemoryStore` — sobrevive a
 # reinicios del proceso; sigue siendo el mismo `IMemory`, mismo contrato,
 # mismo singleton de módulo.
-_agent_manager = AgentManager()
+_agent_manager = AgentManager(filesystem_allowed_root=settings.filesystem_allowed_root)
 _event_bus: IEventBus = AsyncEventBus()
 _memory: IMemory = SQLiteMemoryStore(settings.memory_db_path)
 # `IMessageBus` real sobre Redis Streams (docs/specs/MessageBus.spec.md) —

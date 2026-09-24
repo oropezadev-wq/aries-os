@@ -100,8 +100,11 @@ async def _subscribe_all(bus: AsyncEventBus, collector: EventCollector) -> None:
 
 
 @pytest.fixture(name="agent_manager")
-def fixture_agent_manager() -> AgentManager:
-    return AgentManager()
+def fixture_agent_manager(tmp_path: Path) -> AgentManager:
+    # filesystem_allowed_root = tmp_path: auditoría de seguridad
+    # 2026-09-23, hallazgo ALTO #3 — sin esto, FileSystemAgent/
+    # DatabaseAgent fallan cerrado en cualquier acción real.
+    return AgentManager(filesystem_allowed_root=str(tmp_path))
 
 
 @pytest.fixture(name="memory")

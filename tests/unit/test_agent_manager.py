@@ -152,9 +152,10 @@ class TestDispatchReturnsResultUnmodified:
 
 class TestDispatchIntegrationFileSystem:
     @pytest.mark.asyncio
-    async def test_write_and_read_file_through_manager(
-        self, manager: AgentManager, tmp_path: Path
-    ) -> None:
+    async def test_write_and_read_file_through_manager(self, tmp_path: Path) -> None:
+        # allowed_root propio (no el fixture `manager` compartido, que usa
+        # el default sin root — auditoría 2026-09-23, hallazgo ALTO #3).
+        manager = AgentManager(filesystem_allowed_root=str(tmp_path))
         target = tmp_path / "hola.txt"
 
         write_result = await manager.dispatch(
@@ -209,9 +210,9 @@ class TestDispatchIntegrationGit:
 
 class TestDispatchIntegrationDatabase:
     @pytest.mark.asyncio
-    async def test_list_tables_through_manager_on_real_sqlite_file(
-        self, manager: AgentManager, tmp_path: Path
-    ) -> None:
+    async def test_list_tables_through_manager_on_real_sqlite_file(self, tmp_path: Path) -> None:
+        # allowed_root propio, mismo motivo que arriba.
+        manager = AgentManager(filesystem_allowed_root=str(tmp_path))
         db_path = tmp_path / "test.db"
         conn = sqlite3.connect(str(db_path))
         conn.execute("CREATE TABLE notas (id INTEGER PRIMARY KEY, texto TEXT)")

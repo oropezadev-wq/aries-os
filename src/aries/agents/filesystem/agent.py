@@ -40,7 +40,7 @@ class FileSystemAgent(IAgent):
 
     _DESTRUCTIVE_ACTIONS: frozenset[str] = frozenset({"delete_file"})
 
-    def __init__(self) -> None:
+    def __init__(self, allowed_root: str = "") -> None:
         self.logger: BoundLogger = get_logger(self.__class__.__name__)
         self._handlers: dict[str, Callable[..., Awaitable[_HandlerResult]]] = {
             "read_file": self._read_file,
@@ -49,6 +49,32 @@ class FileSystemAgent(IAgent):
             "delete_file": self._delete_file,
             "write_file": self._write_file,
         }
+        # Auditoría de seguridad 2026-09-23, hallazgo ALTO #3: sin esto,
+        # cualquier `path` absoluto del disco era alcanzable (path
+        # traversal / acceso a cualquier archivo). "" = sin raíz
+        # configurada -> falla cerrado (decisión del usuario, no hay
+        # default permisivo como el home del usuario). `.resolve()` una
+        # sola vez acá, no en cada llamada — validado en Windows: resuelve
+        # nombres 8.3 a su forma larga y normaliza mayúsculas/minúsculas,
+        # ver docs/audits/2026-09-23-security-audit.md.
+        self._allowed_root: Path | None = Path(allowed_root).resolve() if allowed_root else None
+
+    def _resolve_within_root(self, path: str) -> Path:
+        """Resuelve `path` y verifica que quede contenido en
+        `self._allowed_root` — comparación estructural de componentes de
+        ruta (`is_relative_to`), nunca de texto (un prefijo de string como
+        `/allowed` matchearía `/allowed_evil`, `is_relative_to` no).
+        Lanza `PermissionError` (ya manejado por `execute()`) si no hay
+        raíz configurada o si la ruta cae afuera."""
+        if self._allowed_root is None:
+            raise PermissionError(
+                "FileSystemAgent no tiene una raíz permitida configurada "
+                "(Settings.filesystem_allowed_root) — todas las acciones de archivo están bloqueadas"
+            )
+        resolved = Path(path).resolve()
+        if not resolved.is_relative_to(self._allowed_root):
+            raise PermissionError(f"Ruta fuera de la raíz permitida ({self._allowed_root}): {path}")
+        return resolved
 
     def get_agent_name(self) -> str:
         return "filesystem"
@@ -127,12 +153,12 @@ class FileSystemAgent(IAgent):
         )
 
     async def _read_file(self, path: str, **_: Any) -> _HandlerResult:
-        file_path = Path(path)
+        file_path = self._resolve_within_root(path)
         content = await asyncio.to_thread(file_path.read_text, encoding="utf-8")
         return content, {"path": str(file_path), "size": len(content)}
 
     async def _list_directory(self, path: str, **_: Any) -> _HandlerResult:
-        dir_path = Path(path)
+        dir_path = self._resolve_within_root(path)
         if not dir_path.exists():
             raise FileNotFoundError(path)
         if not dir_path.is_dir():
@@ -147,12 +173,12 @@ class FileSystemAgent(IAgent):
     async def _create_directory(
         self, path: str, parents: bool = True, exist_ok: bool = False, **_: Any
     ) -> _HandlerResult:
-        dir_path = Path(path)
+        dir_path = self._resolve_within_root(path)
         dir_path.mkdir(parents=parents, exist_ok=exist_ok)
         return f"Directorio creado: {path}", {"path": str(dir_path)}
 
     async def _delete_file(self, path: str, **_: Any) -> _HandlerResult:
-        file_path = Path(path)
+        file_path = self._resolve_within_root(path)
         if not file_path.exists():
             raise FileNotFoundError(path)
         if file_path.is_dir():
@@ -164,7 +190,7 @@ class FileSystemAgent(IAgent):
     async def _write_file(
         self, path: str, content: str = "", overwrite: bool = True, **_: Any
     ) -> _HandlerResult:
-        file_path = Path(path)
+        file_path = self._resolve_within_root(path)
         if file_path.is_dir():
             raise IsADirectoryError(path)
         if file_path.exists() and not overwrite:

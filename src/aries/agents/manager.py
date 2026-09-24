@@ -35,16 +35,27 @@ from .process import ProcessAgent
 class AgentManager:
     """Registro y ruteo de ejecuciones hacia los `IAgent` del sistema."""
 
-    def __init__(self, agents: list[IAgent] | None = None) -> None:
+    def __init__(self, agents: list[IAgent] | None = None, filesystem_allowed_root: str = "") -> None:
         self.logger: BoundLogger = get_logger(self.__class__.__name__)
         self._agents: dict[str, IAgent] = {}
-        for agent in agents if agents is not None else self._default_agents():
+        for agent in agents if agents is not None else self._default_agents(filesystem_allowed_root):
             self.register(agent)
 
     @staticmethod
-    def _default_agents() -> list[IAgent]:
-        """Los 4 `IAgent` concretos existentes hoy en el proyecto."""
-        return [FileSystemAgent(), ProcessAgent(), GitAgent(), DatabaseAgent()]
+    def _default_agents(filesystem_allowed_root: str = "") -> list[IAgent]:
+        """Los 4 `IAgent` concretos existentes hoy en el proyecto.
+
+        `filesystem_allowed_root` se reenvía a `FileSystemAgent`/
+        `DatabaseAgent` (auditoría de seguridad 2026-09-23, hallazgo ALTO
+        #3) — vacío = sin raíz configurada, esos dos agentes fallan
+        cerrado en cualquier acción de archivo/DB hasta que se configure
+        `Settings.filesystem_allowed_root`."""
+        return [
+            FileSystemAgent(allowed_root=filesystem_allowed_root),
+            ProcessAgent(),
+            GitAgent(),
+            DatabaseAgent(allowed_root=filesystem_allowed_root),
+        ]
 
     def register(self, agent: IAgent) -> None:
         """Registra (o reemplaza) un agente bajo su `get_agent_name()`."""

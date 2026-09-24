@@ -49,17 +49,24 @@ class FakeLLMProvider(ILLMProvider):
         return "fake"
 
 
-def _override_planner(responses: list[str], memory: InMemoryStore | None = None) -> Planner:
+def _override_planner(
+    responses: list[str], memory: InMemoryStore | None = None, filesystem_allowed_root: str = ""
+) -> Planner:
     """Sobreescribe `get_planner()` con un Planner fijo — la MISMA instancia
     para todas las requests hasta que se limpie el override (fixture
     `_clear_overrides`). Eso es justamente lo que permite probar que el
     contexto de una sesión sobrevive entre dos `POST /message` seguidos: el
     `memory` (y el resto de las dependencias) es el mismo objeto en ambas
     llamadas, ni más ni menos que como lo sería con los singletons reales de
-    `api.py` dentro de un mismo proceso."""
+    `api.py` dentro de un mismo proceso.
+
+    `filesystem_allowed_root` (default "" = sin configurar): tests que
+    ejercitan FileSystemAgent/DatabaseAgent de verdad tienen que pasar
+    `str(tmp_path)` — auditoría de seguridad 2026-09-23, hallazgo ALTO #3,
+    esos dos agentes fallan cerrado sin una raíz configurada."""
     fake_planner = Planner(
         llm_provider=FakeLLMProvider(responses),
-        agent_manager=AgentManager(),
+        agent_manager=AgentManager(filesystem_allowed_root=filesystem_allowed_root),
         event_bus=AsyncEventBus(),
         memory=memory if memory is not None else InMemoryStore(),
     )
@@ -104,7 +111,7 @@ class TestPostMessageEndToEnd:
                 ],
             }
         )
-        _override_planner([intent, "Listo, se creó el archivo."])
+        _override_planner([intent, "Listo, se creó el archivo."], filesystem_allowed_root=str(tmp_path))
         client = TestClient(app)
 
         response = client.post("/message", json={"user_input": "crea un archivo"})
@@ -151,7 +158,7 @@ class TestPostMessageEndToEnd:
                 ],
             }
         )
-        _override_planner([intent, "Listo, se borró."])
+        _override_planner([intent, "Listo, se borró."], filesystem_allowed_root=str(tmp_path))
         client = TestClient(app)
 
         response = client.post(
@@ -185,7 +192,7 @@ class TestPostMessageEndToEnd:
                 ],
             }
         )
-        _override_planner([intent, "listo"])
+        _override_planner([intent, "listo"], filesystem_allowed_root=str(tmp_path))
         client = TestClient(app)
 
         response = client.post(
@@ -223,7 +230,8 @@ class TestConversationContextAcrossRequests:
         )
         second_intent = json.dumps({"intent": "referencia al archivo anterior", "steps": []})
         fake_planner = _override_planner(
-            [first_intent, "Creé notas.txt.", second_intent, "No hay nada más que hacer."]
+            [first_intent, "Creé notas.txt.", second_intent, "No hay nada más que hacer."],
+            filesystem_allowed_root=str(tmp_path),
         )
         client = TestClient(app)
 

@@ -68,6 +68,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 import sqlalchemy as sa
@@ -84,7 +85,7 @@ _HandlerResult = tuple[str, dict[str, Any]]
 class DatabaseAgent(IAgent):
     """Agente que ejecuta operaciones SQL sobre una base SQLite en disco."""
 
-    def __init__(self) -> None:
+    def __init__(self, allowed_root: str = "") -> None:
         self.logger: BoundLogger = get_logger(self.__class__.__name__)
         self._handlers: dict[str, Callable[..., Awaitable[_HandlerResult]]] = {
             "execute_query": self._execute_query,
@@ -95,6 +96,11 @@ class DatabaseAgent(IAgent):
             "get_schema": self._get_schema,
             "execute_transaction": self._execute_transaction,
         }
+        # Auditoría de seguridad 2026-09-23, hallazgo ALTO #3: mismo
+        # criterio y misma fuente (`Settings.filesystem_allowed_root`) que
+        # `FileSystemAgent` — sin esto, cualquier `db_path` del disco era
+        # alcanzable. "" = sin raíz configurada -> falla cerrado.
+        self._allowed_root: Path | None = Path(allowed_root).resolve() if allowed_root else None
 
     def get_agent_name(self) -> str:
         return "database"
@@ -161,6 +167,8 @@ class DatabaseAgent(IAgent):
 
         try:
             output, data = await handler(**kwargs)
+        except PermissionError:
+            return self._failed("Permiso denegado: db_path fuera de la raíz permitida o sin configurar", start)
         except NoSuchTableError as error:
             return self._failed(f"No existe la tabla: {error}", start)
         except IntegrityError as error:
@@ -200,11 +208,18 @@ class DatabaseAgent(IAgent):
     def _short(error: Exception) -> str:
         return str(error).split("\n")[0]
 
-    @staticmethod
-    def _engine(db_path: str) -> sa.Engine:
+    def _engine(self, db_path: str) -> sa.Engine:
         if not isinstance(db_path, str) or not db_path.strip():
             raise ValueError("db_path no puede estar vacío")
-        return sa.create_engine(f"sqlite:///{db_path}")
+        if self._allowed_root is None:
+            raise PermissionError(
+                "DatabaseAgent no tiene una raíz permitida configurada "
+                "(Settings.filesystem_allowed_root) — todas las acciones de base de datos están bloqueadas"
+            )
+        resolved = Path(db_path).resolve()
+        if not resolved.is_relative_to(self._allowed_root):
+            raise PermissionError(f"db_path fuera de la raíz permitida ({self._allowed_root}): {db_path}")
+        return sa.create_engine(f"sqlite:///{resolved}")
 
     # --- Capacidades ---------------------------------------------------
 
