@@ -108,6 +108,58 @@ Días contados: ninguno todavía.
   - Herramientas nuevas de este diagnóstico (reutilizables): `run_training.py --positive-train-dir`/`--positive-test-dir`/`--seed`/`--no-hard-negatives`/`--model-name`, `evaluate_model.py --fa-targets` (curva completa), `--ambient-max-minutes` (clasificación rápida durante un barrido) y distribución de scores + AUC.
 - **Próximo paso — pendiente de decisión del usuario/supervisor:** con el bug corregido, `seed4` (el número válido, elegido a ciegas) da 16,7% @ 0,5 FA/h y 53,3% @ 5 FA/h — mejor que el modelo desplegado en AUC y en la cola alta de la curva, pero no dramáticamente mejor en el punto estricto de 0,5 FA/h. La varianza entre semillas (6,7%–63,3%) sigue sin explicación — la hipótesis de `max_negative_weight` quedó reabierta (la evidencia que la sostenía era el bug), y la hipótesis del régimen de datos también. Nada de esto se decide unilateralmente acá. **La corrida de entrenamiento de producción (steps=10000) sigue pausada.**
 
+#### Síntesis multi-voz con Piper (2026-09-24/25) — mejora real, confirmada con mediana+rango
+
+Orden del usuario tras arreglar el criterio de selección (ver arriba):
+síntesis multi-voz en español, no `piper-sample-generator` (bloqueado
+por falta de checkpoint multi-speaker en español, Decisión 2) sino
+varias voces *single-speaker* por separado — la Decisión 2 bloqueaba
+esa herramienta puntual, no la idea (corrección del usuario).
+
+**Voces usadas** (catálogo real verificado, `rhasspy/piper-voices`, 9
+voces en español — "cortana"/"gevy" que había mencionado el usuario no
+están en el catálogo oficial, se sustituyeron): `es_MX-claude-high` (ya
+local), `es_MX-ald-medium`, `es_AR-daniela-high` (español argentino,
+agregado extra por acento), `es_ES-davefx-medium`.
+
+**`synthesize_positives.py`** (nuevo): sintetiza "oye aries" con cada
+voz, variando `length_scale`/`noise_scale`/`noise_w_scale` de Piper. No
+aplica pitch/reverb/ruido — eso ya lo hace `run_training.py` sobre
+cualquier `.wav`, sintético o real, vía la augmentación existente.
+1000 clips generados (4 voces × 250), en `dataset/synthetic_positive/`.
+`run_training.py --synthetic-positive-dir` (opt-in explícito) los suma
+SOLO a `positive_train`, nunca a `positive_test`/`eval_frozen`.
+
+**5 semillas entrenadas** (43 tomas reales + 1000 sintéticas, con
+hard_negatives, steps=10000, evaluadas las 5 contra `eval_frozen`
+completo — uso legítimo para caracterizar mediana/rango del método, no
+para elegir una a desplegar):
+
+| FA/hora | Mediana sin síntesis (n=4) | Rango sin síntesis | Mediana con síntesis (n=5) | Rango con síntesis |
+|---|---|---|---|---|
+| 0,5 | 25,0 % | 6,7–63,3 (ancho 56,6) | **46,7 %** | 3,3–53,3 (ancho 50,0) |
+| 1,0 | 30,0 % | 6,7–76,7 (ancho 70,0) | **56,7 %** | 23,3–60,0 (**ancho 36,7**) |
+| 2,0 | 43,3 % | 10,0–76,7 (ancho 66,7) | **60,0 %** | 33,3–66,7 (**ancho 33,4**) |
+| 5,0 | 55,0 % | 20,0–83,3 (ancho 63,3) | **70,0 %** | 50,0–73,3 (**ancho 23,3**) |
+
+**Lectura:** en 1/2/5 FA/hora la mediana sube sustancialmente y el
+rango se achica casi a la mitad — la hipótesis del usuario (varianza y
+escasez de datos son el mismo problema, la síntesis ataca los dos) se
+sostiene ahí con evidencia de mediana+rango, no de una corrida. En 0,5
+FA/hora (el punto más estricto — menos de 1 falsa activación permitida
+en 90 min) la mediana también mejora pero el rango casi no se achica,
+consistente con que 90 min de ambiente es poco para estimar tasas tan
+bajas de forma confiable (ver más abajo) — parte de ese ruido en 0,5
+puede ser del instrumento de medición, no solo del modelo.
+
+**Pendiente, sin decidir acá:** cuál de las 5 semillas (si alguna)
+desplegar requiere la misma disciplina de siempre (elegir por
+`positive_test` antes de mirar `eval_frozen`) — evaluarlas todas contra
+`eval_frozen` fue para medir el método, no para elegir una. El ablation
+de `hard_negatives` sigue pendiente hasta poder correr 5 semillas por
+brazo. Los 90 min de audio ambiente siguen siendo pocos para 0,5
+FA/hora — grabar más queda para cuando el usuario esté de vuelta.
+
 #### Push-to-talk (2026-09-24)
 
 Vía de activación adicional a la wake word — un hotkey global. **No

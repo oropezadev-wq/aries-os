@@ -320,14 +320,23 @@ sobre el modelo ya elegido — nunca al revés.
 ## Estado
 
 - [x] Frase decidida: "Oye Aries" (originalmente "Hola Aries", revisada 2026-09-21)
-- [x] Fuente de datos decidida: grabación real
+- [x] Fuente de datos decidida: grabación real **+ síntesis multi-voz
+      complementaria** (revisado 2026-09-24/25 — Decisión 2 bloqueaba
+      `piper-sample-generator`, no la idea de sintéticos en español;
+      ver "Síntesis multi-voz" en PROGRESS.md, resultado positivo
+      confirmado con mediana+rango de 5 semillas)
 - [x] Cómputo decidido: local/CPU
 - [x] `pyproject.toml`: extra `voice-training` agregado
 - [x] `tools/wake_word_training/record_samples.py`: script de grabación
+- [x] `tools/wake_word_training/synthesize_positives.py`: síntesis
+      multi-voz con Piper (4 voces, 1000 clips), conectada a
+      `run_training.py --synthetic-positive-dir`
 - [ ] Grabar 150-300 tomas reales (usuario, en curso — 101/200 grabadas
       2026-09-21, frase "Oye Aries"; 30 de esas 101 congeladas en
-      `dataset/eval_frozen/`, ver Decisión 5 — quedan 71 en
-      `positive_train`/`positive_test` para entrenar)
+      `dataset/eval_frozen/`, ver Decisión 5. **Repartido 2026-09-24**
+      (`repartition_positive_split.py`, positive_test era demasiado
+      ruidoso como criterio de selección): de las 71 restantes, ahora
+      43 en `positive_train` / 28 en `positive_test`)
 - [x] Set de evaluación congelado (Decisión 5, punto 1 del supervisor)
 - [x] Negativos difíciles (Decisión 5, punto 4 del supervisor) — 80 tomas
       reales grabadas y cableadas en el entrenamiento
