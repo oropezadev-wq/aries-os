@@ -226,11 +226,43 @@ bloquear lo acumulado en el stream, invocado en
 `_listen_for_activation_sync()` justo después del beep de inicio y
 antes de `record_until_silence()` (commit `21bd881`).
 
-**Estado: fix implementado, pendiente mi verificación física — NO
-dado por cerrado.** No es verificable en este entorno (sin
-micrófono/hotkey real); requiere que el usuario lo prenda con
-hardware real y confirme que el corte dejó de pasar antes de
-considerarlo resuelto.
+**Estado: CONFIRMADO con hardware real (2026-09-25, reportado por el
+usuario).** El combo registró, la captura arrancó, y Whisper
+transcribió la frase completa ("Hola Arias, ¿Qué hora es?") sin
+cortarse al principio — el fix de `drain()` era justo lo que faltaba.
+Cerrado.
+
+**Bug nuevo encontrado en la misma prueba: 401 en `POST /message`.**
+El usuario planteó 3 hipótesis (nombres de variable distintos entre
+API y cliente de Voice, comillas/espacios en `.env`, nombre de header
+equivocado) — ninguna era la causa real. `require_api_key`
+(`api.py:190-191`) y `voice/__main__.py` leen el mismo campo
+`Settings.api_key` (una sola fuente, sin duplicación) — el problema es
+que **`API_KEY` nunca se agregó a `.env`** tras el rediseño de
+seguridad del 2026-09-23: el archivo solo tenía
+`VOICE_TTS_MODEL_PATH`/`VOICE_WAKE_WORD_THRESHOLD`. Con la key vacía,
+el servidor rechaza *todos* los pedidos a `/message` por diseño (falla
+cerrado) — exactamente lo que se vio, no un bug de código.
+
+**Fix:** se generó una key nueva (`secrets.token_urlsafe(32)`) y se
+agregó a `.env` (local, no versionado). De paso, se limpió una línea
+duplicada de `VOICE_TTS_MODEL_PATH` (un placeholder `RUTA_COMPLETA_AQUI.onnx`
+sin usar, la línea real ya la sobreescribía). **Verificado sin
+reiniciar el servidor vivo** (PID activo en el puerto 8000, arrancado
+antes del cambio): `/health` sigue en 200 sin auth (como se diseñó),
+`POST /message` con la key nueva todavía da 401 porque el proceso en
+memoria tiene la key vieja (vacía) — confirma el diagnóstico. **Falta
+reiniciar tanto la API como Voice** para que levanten el `.env`
+actualizado; no se reinició nada acá a propósito (el usuario podía
+estar en medio de otra prueba).
+
+**Hallazgo aparte (mismo reporte):** los logs de Voice mostraban
+mojibake en acentos/ñ ("Versi�n") — la consola de Windows usa cp1252
+por default, no UTF-8, y eso se propaga también a los logs armados
+redirigiendo stdout/stderr a un archivo. Fix real (no solo un flag de
+PowerShell a recordar cada vez): `voice/__main__.py` ahora reconfigura
+`sys.stdout`/`sys.stderr` a UTF-8 al arrancar, mismo shim que ya usaba
+`run_training.py` para el mismo problema (commit `528b514`).
 
 ### Registro previo al contador vigente (no cuenta)
 
