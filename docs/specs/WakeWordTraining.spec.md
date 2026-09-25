@@ -266,30 +266,31 @@ Resumen:
    2026-09-22) en las 4 evaluaciones comparadas.
 
 **Hallazgo no pedido, encontrado durante el experimento de reentrenamiento
-que sí pidió el supervisor — corregido tras una revisión del usuario:**
-el experimento comparó 50 vs **63** tomas, no 50 vs 101 (`101` es el
-total grabado, no el tamaño de entrenamiento — 30 de esas 101 están
-congeladas en `eval_frozen/`; el N de entrenamiento del modelo
-desplegado y de este experimento es el mismo, 63). Nunca se probó un N
-mayor a 63. Con eso corregido, el hallazgo real (vía distribución de
-scores + AUC, `evaluate_model.py` nuevo): **los dos reentrenamientos
-frescos (50 y 63) colapsaron a AUC=0.5000 exacto — cero señal
-aprendida, no una mala calibración.** El modelo ya desplegado (mismas
-63 tomas) tiene AUC=0.988 — sí aprendió separación real, su problema es
-consistencia entre tomas individuales, no ausencia de aprendizaje. Solo
-1 de 3 corridas reales con N∈{50,63} preservó señal — evidencia de
-inestabilidad de la corrida (`auto_train` escaló `max_negative_weight`
-dos veces en ambas corridas colapsadas, mismo mecanismo ya sospechado
-en `training_config.yaml`), no evidencia sobre si más datos ayudaría o
-no (sigue sin testearse). Ver PROGRESS.md para el detalle completo y
-las herramientas nuevas (`run_training.py --positive-train-dir`,
-`evaluate_model.py --fa-targets`/AUC, configs
-`training_config_diag50/101.yaml`).
+que sí pidió el supervisor — corregido dos veces tras revisión (usuario,
+luego yo mismo):** primero se corrigió 50 vs 101 → 50 vs **63** (`101`
+es el total grabado, no el N de entrenamiento — 30 de esas 101 están en
+`eval_frozen/`). Después se descubrió que el "colapso total" (AUC=0.5000
+exacto en 7 corridas) **era un bug de `evaluate_model.py`, no del
+entrenamiento**: `_load_model()` indexaba el resultado de `predict()`
+con una clave fija (`"oye_aries"`) en vez del `model_name` real del
+`.onnx` cargado — cualquier modelo con `--model-name` distinto (los 7 de
+este diagnóstico) caía siempre al default 0.0 en silencio. Fix + auditoría
+del mismo patrón en el resto del tooling: commit `5776aca`.
 
-**No se investigó más profundo a propósito** (un ablation sin
-`hard_negatives`, o correr varias veces con seed fija para medir tasa
-de colapso, serían los siguientes pasos lógicos) — se para acá,
-pendiente de que el usuario/supervisor decida cómo seguir.
+**Resultado real, con el fix:** ningún modelo colapsó — los 7 tienen
+AUC>0.98. Sí hay varianza real y grande entre semillas a igual N=63
+(6.7%–63.3% de recall a 0.5 FA/hora) — inestabilidad genuina, separada
+del bug. El modelo seleccionado a ciegas por `positive_test` (`seed4`,
+antes de ver `eval_frozen`) da 16.7% @ 0.5 FA/h, 53.3% @ 5 FA/h — mejor
+AUC que el desplegado pero no dramáticamente mejor en el punto estricto.
+Una semilla (`seed2`) muestra 63.3%–83.3%, pero se vio **después** de
+elegir por `positive_test` — no se reporta como resultado por el mismo
+motivo que motivó todo este chequeo (no contaminar el set held-out).
+Tabla completa y la salvedad metodológica en PROGRESS.md.
+
+Ambas hipótesis (régimen de datos, `max_negative_weight`) quedan
+reabiertas — la evidencia que las sostenía o refutaba era el bug.
+Pendiente de que el usuario/supervisor decida cómo seguir.
 
 ## Estado
 
