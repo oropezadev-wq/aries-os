@@ -53,8 +53,41 @@ def _load_model(path_or_name: str, key: str):
     from openwakeword.model import Model
 
     if path_or_name.endswith(".onnx"):
-        return Model(wakeword_model_paths=[path_or_name], inference_framework="onnx"), key
+        # BUG REAL encontrado 2026-09-24: acá se devolvía el `key` fijo
+        # que pasó el llamador ("oye_aries" siempre, ver `main()`) en vez
+        # de derivarlo del archivo. openwakeword indexa el dict que
+        # devuelve `model.predict()` por el `model_name` real con el que
+        # se exportó el .onnx (verificado: para un modelo exportado como
+        # "oye_aries_diag_seed4.onnx", `predict()` devuelve la clave
+        # 'oye_aries_diag_seed4', no 'oye_aries'). Con el key fijo,
+        # `.get(key, 0.0)` caía siempre al default 0.0 para CUALQUIER
+        # modelo con `model_name` distinto de "oye_aries" — exactamente
+        # los usados por `--model-name` en los experimentos de diagnóstico
+        # de esta misma sesión (diag50/diag101/diag_ablation/diag_seed*).
+        # El único modelo donde el bug no se notaba era el desplegado
+        # real, porque su `model_name` literalmente es "oye_aries". Esto
+        # invalidó por completo los resultados de "colapso total" (AUC
+        # 0.5000 exacto) reportados antes de este fix — ver PROGRESS.md.
+        return Model(wakeword_model_paths=[path_or_name], inference_framework="onnx"), Path(path_or_name).stem
     return Model(wakeword_models=[path_or_name], inference_framework="onnx"), path_or_name
+
+
+def _predict_score(model, key: str, frame: np.ndarray) -> float:
+    """Envoltorio de `model.predict()` que falla fuerte si `key` no está
+    en el resultado, en vez de devolver 0.0 en silencio — auditoría
+    2026-09-24 (ver `_load_model`): el bug real de esta sesión fue
+    exactamente `.get(key, 0.0)` tapando un `key` que no coincidía,
+    produciendo un AUC de 0.5000 exacto en 7 corridas sin ningún error.
+    Ese patrón (fallar hacia un valor plausible en vez de una excepción)
+    es el que se estaba buscando en el resto del tooling de esta carpeta
+    — acá era el propio evaluador."""
+    result = model.predict(frame)
+    if key not in result:
+        raise KeyError(
+            f"'{key}' no está en el resultado de predict() — claves reales: {list(result.keys())}. "
+            "¿El modelo se exportó con otro model_name?"
+        )
+    return result[key]
 
 
 def _score_eval_frozen(model, key: str, eval_dir: Path) -> np.ndarray:
@@ -70,16 +103,23 @@ def _score_eval_frozen(model, key: str, eval_dir: Path) -> np.ndarray:
         pcm = np.concatenate([pad, x, pad])
         best = 0.0
         for i in range(0, len(pcm) - 1279, 1280):
-            best = max(best, model.predict(pcm[i : i + 1280]).get(key, 0.0))
+            best = max(best, _predict_score(model, key, pcm[i : i + 1280]))
         scores.append(best)
     return np.array(scores)
 
 
-def _score_ambient_stream(model, key: str, ambient_dir: Path) -> tuple[np.ndarray, float]:
+def _score_ambient_stream(model, key: str, ambient_dir: Path, max_minutes: float | None = None) -> tuple[np.ndarray, float]:
     """Corre inferencia frame por frame sobre el audio ambiente completo,
     concatenado en el orden real de grabación (sessions.jsonl), como un
     único stream continuo (igual que en producción). Devuelve la serie de
-    scores (uno cada 80ms) y la duración total en horas."""
+    scores (uno cada 80ms) y la duración total en horas.
+
+    `max_minutes` corta el stream antes (no baja la tasa de FA/hora real,
+    solo la precisión de esa estimación — ver `--ambient-max-minutes`):
+    para clasificar rápido "¿esta corrida colapsó o no?" (AUC contra una
+    muestra) durante un barrido de varias corridas no hace falta escanear
+    los 90 min completos cada vez; la curva de FA/hora final sí debe
+    correr sobre el stream completo antes de reportar un número real."""
     manifest_path = ambient_dir / "sessions.jsonl"
     ordered_files: list[str] = []
     if manifest_path.exists():
@@ -89,15 +129,20 @@ def _score_ambient_stream(model, key: str, ambient_dir: Path) -> tuple[np.ndarra
     else:
         ordered_files = sorted(p.name for p in ambient_dir.glob("*.wav"))
 
+    max_samples = None if max_minutes is None else int(max_minutes * 60 * 16000)
     scores = []
     total_samples = 0
     for name in ordered_files:
+        if max_samples is not None and total_samples >= max_samples:
+            break
         sr, x = wavfile.read(ambient_dir / name)
         if x.ndim > 1:
             x = x[:, 0]
+        if max_samples is not None and total_samples + len(x) > max_samples:
+            x = x[: max_samples - total_samples]
         total_samples += len(x)
         for i in range(0, len(x) - 1279, 1280):
-            scores.append(model.predict(x[i : i + 1280]).get(key, 0.0))
+            scores.append(_predict_score(model, key, x[i : i + 1280]))
     return np.array(scores), total_samples / 16000 / 3600
 
 
@@ -191,9 +236,16 @@ def _auc(pos_scores: np.ndarray, neg_scores: np.ndarray) -> float:
     return float((sum_ranks_pos - n_pos * (n_pos + 1) / 2) / (n_pos * len(neg_scores)))
 
 
-def _evaluate(model, key: str, eval_dir: Path, ambient_dir: Path, thresholds: list[float], fa_targets: list[float]) -> None:
+def _evaluate(
+    model, key: str, eval_dir: Path, ambient_dir: Path, thresholds: list[float], fa_targets: list[float],
+    ambient_max_minutes: float | None = None,
+) -> None:
     eval_scores = _score_eval_frozen(model, key, eval_dir)
-    ambient_scores, ambient_hours = _score_ambient_stream(model, key, ambient_dir)
+    ambient_scores, ambient_hours = _score_ambient_stream(model, key, ambient_dir, max_minutes=ambient_max_minutes)
+    if ambient_max_minutes is not None:
+        print(f"AVISO: ambient_audio recortado a {ambient_max_minutes:.0f} min (--ambient-max-minutes) — "
+              "clasificación rápida, no un número final de FA/hora (90 min es poco para tasas <1/hora, "
+              "ver PROGRESS.md).")
 
     print(f"\n=== {key} ===")
     print(f"eval_frozen: n={len(eval_scores)} tomas (nunca vistas en entrenamiento)")
@@ -235,14 +287,20 @@ def main() -> None:
         help="Tasas de FA/hora a las que reportar el punto de operación interpolado (curva completa, no un solo punto)",
     )
     parser.add_argument("--compare-hey-jarvis", action="store_true", help="Corre también hey_jarvis sobre los mismos datos, para comparar")
+    parser.add_argument(
+        "--ambient-max-minutes", type=float, default=None,
+        help="Recorta ambient_audio/ a los primeros N minutos — clasificación rápida ('¿colapsó o no?') "
+        "durante un barrido de varias corridas, NO un número final de FA/hora (correr sin este flag "
+        "para el modelo candidato final)",
+    )
     args = parser.parse_args()
 
     model, key = _load_model(args.model, "oye_aries")
-    _evaluate(model, key, args.eval_dir, args.ambient_dir, args.thresholds, args.fa_targets)
+    _evaluate(model, key, args.eval_dir, args.ambient_dir, args.thresholds, args.fa_targets, args.ambient_max_minutes)
 
     if args.compare_hey_jarvis:
         hj_model, hj_key = _load_model("hey_jarvis", "hey_jarvis")
-        _evaluate(hj_model, hj_key, args.eval_dir, args.ambient_dir, args.thresholds, args.fa_targets)
+        _evaluate(hj_model, hj_key, args.eval_dir, args.ambient_dir, args.thresholds, args.fa_targets, args.ambient_max_minutes)
 
 
 if __name__ == "__main__":

@@ -151,6 +151,15 @@ def _trim_mmap_windows_safe(mmap_path: str) -> None:
         del mmap_file1
         return
 
+    # Auditoría 2026-09-24: este camino asume que las filas todo-cero al
+    # final son padding sin usar, no datos reales — cierto hoy (n_total
+    # siempre es exacto, ver comentario arriba) pero silencioso si algún
+    # día dejara de serlo (ej. un clip real de puro silencio coincide con
+    # esta condición). Si algo alguna vez entra acá, que se note.
+    logger.warning(
+        "trim_mmap recortando %s: %d filas -> %d (se asume que son padding sin usar, no datos reales)",
+        mmap_path, mmap_file1.shape[0], n_new,
+    )
     output_file2 = str(Path(mmap_path).with_suffix("")) + "_trimmed.npy"
     mmap_file2 = open_memmap(output_file2, mode="w+", dtype=np.float32, shape=(n_new, mmap_file1.shape[1], mmap_file1.shape[2]))
     for i in range(0, mmap_file1.shape[0], 1024):
@@ -313,11 +322,38 @@ def main() -> None:
         "--positive-test-dir", type=Path, default=None,
         help="Override de dataset/positive_test — ver --positive-train-dir",
     )
+    parser.add_argument(
+        "--seed", type=int, default=None,
+        help="Fija random/numpy/torch antes de entrenar — para diagnóstico de estabilidad "
+        "(¿el colapso es determinista bajo una config fija, o varía entre corridas con la misma "
+        "semilla? mmap_batch_generator de openwakeword puede tener aleatoriedad propia no cubierta "
+        "por esto — no se garantiza reproducibilidad total, solo se reduce la varianza conocida)",
+    )
+    parser.add_argument(
+        "--no-hard-negatives", action="store_true",
+        help="Ablation: ignora hard_negatives_dir aunque tenga archivos, para aislar si "
+        "max_negative_weight escalando por los negativos difíciles es la causa de un colapso",
+    )
+    parser.add_argument(
+        "--model-name", type=str, default=None,
+        help="Override de config['model_name'] — para barridos de semillas/ablations sin "
+        "tener que crear un YAML por corrida (cada una cae en output/<model-name>.onnx propio)",
+    )
     args = parser.parse_args()
+
+    if args.seed is not None:
+        import random
+
+        random.seed(args.seed)
+        np.random.seed(args.seed)
+        torch.manual_seed(args.seed)
+        logger.info("Seed fijada: %d", args.seed)
 
     config = yaml.safe_load(args.config.read_text(encoding="utf-8"))
     if args.steps is not None:
         config["steps"] = args.steps
+    if args.model_name is not None:
+        config["model_name"] = args.model_name
 
     output_dir = (HERE / config["output_dir"]).resolve()
     model_dir = output_dir / config["model_name"]
@@ -350,8 +386,12 @@ def main() -> None:
     )
 
     hard_negatives_dir = HERE / config.get("hard_negatives_dir", "dataset/hard_negatives")
-    hard_negative_files = list(hard_negatives_dir.glob("*/*.wav")) if hard_negatives_dir.exists() else []
+    hard_negative_files = [] if args.no_hard_negatives else (
+        list(hard_negatives_dir.glob("*/*.wav")) if hard_negatives_dir.exists() else []
+    )
     hard_negatives_features: Path | None = None
+    if args.no_hard_negatives:
+        logger.info("--no-hard-negatives: ablation, ignorando %s aunque tenga archivos", hard_negatives_dir)
     if hard_negative_files:
         logger.info("Negativos difíciles: %d archivos en %s", len(hard_negative_files), hard_negatives_dir)
         hard_negatives_features = _make_hard_negative_features(
@@ -404,6 +444,18 @@ def main() -> None:
     label_transforms["positive"] = lambda x: [1 for _ in x]
 
     n_per_class = {k: v for k, v in config["batch_n_per_class"].items() if k in feature_data_files}
+    dropped = set(config["batch_n_per_class"]) - set(n_per_class)
+    if dropped:
+        # Auditoría 2026-09-24 (mismo patrón que el bug real de
+        # evaluate_model.py, ver Decisión 5 bis): antes esto se caía en
+        # silencio si `batch_n_per_class` mencionaba una fuente que no
+        # terminó existiendo en `feature_data_files` (ej. hard_negatives
+        # configurado pero sin archivos) — solo se notaba si alguien
+        # comparaba a mano el config contra el dict impreso abajo.
+        logger.warning(
+            "batch_n_per_class menciona %s pero no hay features para eso — se entrena SIN esa fuente, "
+            "sin que sea un error. Revisar si es lo esperado.", sorted(dropped),
+        )
     logger.info("n_per_class por batch: %s", n_per_class)
 
     from openwakeword.data import mmap_batch_generator
