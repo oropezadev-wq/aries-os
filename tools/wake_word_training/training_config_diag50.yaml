@@ -1,0 +1,131 @@
+# Config de entrenamiento para openwakeword/train.py — modelo "Oye Aries".
+#
+# Validado de punta a punta una vez (run_training.py, commit 64577a8,
+# 2026-09-13) con 27 tomas reales de la frase de entonces ("Hola Aries",
+# descartadas después por audio degradado — la frase actual es "Oye
+# Aries", ver docs/specs/WakeWordTraining.spec.md). Esa corrida confirmó
+# que el mecanismo del pipeline funciona (el .onnx exportado carga y predice
+# con openwakeword.model.Model), no que el modelo en sí sirva — muy
+# pocas muestras. batch_n_per_class más abajo sigue en valores chicos
+# heredados de esa corrida de prueba; subir cuando haya ~100-120
+# grabaciones reales de "Oye Aries".
+#
+# DELIBERADAMENTE no se usa `--generate_clips`: las muestras positivas son
+# grabaciones reales (tools/wake_word_training/record_samples.py), no TTS
+# sintético — ver Decisión 2 del spec. Esto también significa que no hay
+# "negative clips adversariales" generados con Piper (mecanismo opcional
+# de hardening de train.py que también depende de
+# `piper_sample_generator_path`, mismo problema de inglés-only). En su
+# lugar, desde 2026-09-22 hay negativos difíciles REALES grabados
+# (`hard_negatives_dir` abajo, `record_hard_negatives.py`, Decisión 5 del
+# spec: "oye" + otra palabra, "aries" sola) — el negativo total viene de
+# `feature_data_files` (ACAV100M) + `hard_negatives_dir` + `background_paths`
+# (para augmentar las positivas con ruido/reverb).
+
+# Import incondicional en train.py (línea 638) aunque no se use
+# --generate_clips — ver nota técnica en el spec.
+piper_sample_generator_path: "./piper-sample-generator"
+
+model_name: "oye_aries_diag50"
+output_dir: "./output"
+
+target_phrase:
+  - "oye aries"
+
+# Directorios con archivos de audio reales (WAV) para RIR/ruido de fondo,
+# usados para augmentar las grabaciones positivas — NO son TTS, son
+# corpora de audio real independientes del idioma de la wake word.
+# TODO: descargar/apuntar antes de correr --augment_clips. openWakeWord
+# documenta descargas de MIT RIR Survey (RIR) y un subset de
+# audioset/FMA (ruido/música) en su propio notebook.
+rir_paths:
+  - "./negative_data/rir"
+background_paths:
+  - "./negative_data/background_noise"
+background_paths_duplication_rate: [1]
+
+# Features precomputadas de negativos (ACAV100M, ~2000hrs) descargadas de
+# davidscripka/openwakeword_features — bulk real del negativo, no
+# requiere TTS ni idioma. Ver tools/wake_word_training/negative_data/.
+feature_data_files:
+  ACAV100M: "./negative_data/openwakeword_features_ACAV100M_2000_hrs_16bit.npy"
+
+# Negativos difíciles reales (Decisión 5 del spec, punto 4 del
+# supervisor): "oye mira"/"oye tu"/"oye ya"/"aries" sueltos, grabados con
+# record_hard_negatives.py. A diferencia de ACAV100M (un .npy estático ya
+# calculado), acá se apunta al directorio de WAVs crudos —
+# run_training.py extrae las features en el momento (misma augmentación
+# que las positivas: RIR + background_paths), con el mismo total_length
+# que las positivas, y las suma a feature_data_files como una fuente más.
+# Si el directorio no existe o está vacío, run_training.py sigue
+# corriendo igual (con un aviso) — no bloquea, pero el modelo pierde la
+# única señal explícita contra el atajo de dispararse con "oye"/"aries"
+# sueltos.
+hard_negatives_dir: "./dataset/hard_negatives"
+
+false_positive_validation_data_path: "./negative_data/validation_set_features.npy"
+
+# Augmentación (RIR + ruido) sobre las grabaciones reales de
+# dataset/positive_train|test/ (armadas por record_samples.py). No usa
+# `output/<model_name>/positive_train|test` como haría train.py con
+# --generate_clips — run_training.py lee directo de dataset/.
+augmentation_rounds: 2
+augmentation_batch_size: 16
+
+# Arquitectura del clasificador — DNN chico, el mismo tipo que usan los
+# modelos pre-entrenados (hey_jarvis, etc).
+model_type: "dnn"
+layer_size: 32
+
+# run_training.py arma feature_data_files con "positive" + lo que esté en
+# feature_data_files + hard_negatives_dir (si tiene archivos) — n_per_class
+# se filtra automáticamente a las keys que terminen existiendo (ver
+# `main()`), así que sobra dejar acá una key para una fuente que no está.
+#
+# Ajustado 2026-09-21, recalculado 2026-09-22 tras congelar 30 tomas en
+# dataset/eval_frozen/ (Decisión 5 del spec, punto 1 del supervisor):
+# positive_train quedó en 63 archivos (no 90) → con augmentation_rounds=2,
+# positive_features_train.npy tiene 63*2=126 filas, no 180. El motivo de
+# NO usar "varios cientos" sigue siendo el mismo (`mmap_batch_generator`
+# recorre cada array de forma SECUENCIAL, no aleatoria, y no maneja
+# wraparound dentro de un mismo batch — pedir más filas de las que hay da
+# tamaño de batch inconsistente entre pasos), así que se deja positive=32
+# sin tocar (bien por debajo de las 126 filas disponibles).
+#
+# hard_negatives: 80 tomas reales (20 por frase × 4 frases,
+# record_hard_negatives.py) → 80*2=160 filas aumentadas. Mismo criterio
+# que positive: se iguala a 32 (no proporcional a ACAV100M) para que la
+# contribución de "oye"/"aries" sueltos en cada batch sea comparable a la
+# de la frase completa, en vez de diluirse entre las 256 negativas
+# genéricas de ACAV100M — el punto de estos negativos es enseñar una
+# distinción específica, no aportar volumen.
+# hard_negatives bajado de 32 a 16 el 2026-09-22 (evaluate_model.py,
+# Decisión 5 punto 2+3): con 32 (igual a positive) el modelo entrenado
+# colapsó — sobre dataset/eval_frozen/ (nunca visto), ningún umbral daba
+# a la vez FA/hora <=0.5 (target) Y recall usable (mejor punto: umbral
+# 0.70 -> FA/hora 0.67 pero falso_rechazo 93%). Hipótesis: al 10% del
+# batch, los negativos difíciles empujaron el escalado automático de
+# max_negative_weight en auto_train (`self.best_val_fp > target` disparó
+# dos veces, no había disparado nunca en la corrida sin ellos) y eso
+# aplastó el recall. Se prueba 16 como punto intermedio — ver el
+# resultado real en PROGRESS.md antes de asumir que esto lo arregla.
+batch_n_per_class:
+  positive: 32
+  ACAV100M: 256
+  hard_negatives: 16
+
+# steps=10000 es el valor real de producción — para una corrida de humo
+# rápida (validar que el pipeline no rompe, no un modelo usable) pasar
+# `--steps 200` a run_training.py en vez de editar esto.
+steps: 10000
+max_negative_weight: 1500
+target_false_positives_per_hour: 0.5
+
+# No usados (sin --generate_clips), pero train.py los referencia si
+# alguna vez se decide agregar generación sintética adversarial más
+# adelante — se dejan en 0/vacío en vez de borrarlos del config, para que
+# quede explícito que la decisión fue "no generar", no "se olvidó".
+n_samples: 0
+n_samples_val: 0
+tts_batch_size: 1
+custom_negative_phrases: []

@@ -305,6 +305,14 @@ def main() -> None:
     parser.add_argument("--config", type=Path, default=HERE / "training_config.yaml")
     parser.add_argument("--steps", type=int, default=None, help="Override de config['steps'] — usar un número chico para una corrida de prueba")
     parser.add_argument("--overwrite-features", action="store_true")
+    parser.add_argument(
+        "--positive-train-dir", type=Path, default=None,
+        help="Override de dataset/positive_train — para experimentos de diagnóstico (ej. subconjunto más chico) sin tocar el dataset real",
+    )
+    parser.add_argument(
+        "--positive-test-dir", type=Path, default=None,
+        help="Override de dataset/positive_test — ver --positive-train-dir",
+    )
     args = parser.parse_args()
 
     config = yaml.safe_load(args.config.read_text(encoding="utf-8"))
@@ -315,8 +323,8 @@ def main() -> None:
     model_dir = output_dir / config["model_name"]
     model_dir.mkdir(parents=True, exist_ok=True)
 
-    positive_train_dir = HERE / "dataset" / "positive_train"
-    positive_test_dir = HERE / "dataset" / "positive_test"
+    positive_train_dir = args.positive_train_dir or (HERE / "dataset" / "positive_train")
+    positive_test_dir = args.positive_test_dir or (HERE / "dataset" / "positive_test")
     n_train = len(list(positive_train_dir.glob("*.wav")))
     n_test = len(list(positive_test_dir.glob("*.wav")))
     if n_train == 0 or n_test == 0:

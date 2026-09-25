@@ -155,7 +155,7 @@ def _frr_at_fixed_fa_per_hour(
     return float(threshold), 1 - recall
 
 
-def _evaluate(model, key: str, eval_dir: Path, ambient_dir: Path, thresholds: list[float]) -> None:
+def _evaluate(model, key: str, eval_dir: Path, ambient_dir: Path, thresholds: list[float], fa_targets: list[float]) -> None:
     eval_scores = _score_eval_frozen(model, key, eval_dir)
     ambient_scores, ambient_hours = _score_ambient_stream(model, key, ambient_dir)
 
@@ -171,9 +171,14 @@ def _evaluate(model, key: str, eval_dir: Path, ambient_dir: Path, thresholds: li
         fa_per_hour = n_events / ambient_hours
         print(f"{t:7.2f} {recall:8.2%} {frr:14.2%} {fa_per_hour:10.2f}")
 
-    threshold, frr = _frr_at_fixed_fa_per_hour(eval_scores, ambient_scores, ambient_hours, TARGET_FA_PER_HOUR)
-    print(f"\n=== Punto de operación @ {TARGET_FA_PER_HOUR} FA/hora (interpolado, comparable entre corridas) ===")
-    print(f"umbral={threshold:.4f} -> falso_rechazo={frr:.1%} (recall={1 - frr:.1%})")
+    # Curva completa de puntos de operación (no un solo punto a 0.5
+    # FA/hora): a mayor FA/hora tolerado, el umbral baja y el recall
+    # sube — un solo punto puede esconder que a una tasa más alta (pero
+    # todavía usable en la práctica) el modelo sí sirve.
+    print("\n=== Curva de puntos de operación (interpolados, comparables entre corridas) ===")
+    for target in fa_targets:
+        threshold, frr = _frr_at_fixed_fa_per_hour(eval_scores, ambient_scores, ambient_hours, target)
+        print(f"@ {target:>4.1f} FA/hora: umbral={threshold:.4f} -> falso_rechazo={frr:.1%} (recall={1 - frr:.1%})")
 
 
 def main() -> None:
@@ -182,15 +187,19 @@ def main() -> None:
     parser.add_argument("--eval-dir", type=Path, default=HERE / "dataset" / "eval_frozen")
     parser.add_argument("--ambient-dir", type=Path, default=HERE / "dataset" / "ambient_audio")
     parser.add_argument("--thresholds", type=float, nargs="+", default=DEFAULT_THRESHOLDS)
+    parser.add_argument(
+        "--fa-targets", type=float, nargs="+", default=[0.5, 1.0, 2.0, 5.0],
+        help="Tasas de FA/hora a las que reportar el punto de operación interpolado (curva completa, no un solo punto)",
+    )
     parser.add_argument("--compare-hey-jarvis", action="store_true", help="Corre también hey_jarvis sobre los mismos datos, para comparar")
     args = parser.parse_args()
 
     model, key = _load_model(args.model, "oye_aries")
-    _evaluate(model, key, args.eval_dir, args.ambient_dir, args.thresholds)
+    _evaluate(model, key, args.eval_dir, args.ambient_dir, args.thresholds, args.fa_targets)
 
     if args.compare_hey_jarvis:
         hj_model, hj_key = _load_model("hey_jarvis", "hey_jarvis")
-        _evaluate(hj_model, hj_key, args.eval_dir, args.ambient_dir, args.thresholds)
+        _evaluate(hj_model, hj_key, args.eval_dir, args.ambient_dir, args.thresholds, args.fa_targets)
 
 
 if __name__ == "__main__":
