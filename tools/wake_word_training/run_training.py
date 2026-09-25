@@ -208,8 +208,18 @@ def _make_features(
     config: dict,
     model_dir: Path,
     overwrite: bool,
+    extra_train_dirs: list[Path] | None = None,
 ) -> tuple[Path, Path, int]:
     train_files = list(positive_train_dir.glob("*.wav"))
+    # Fuentes de train adicionales (ej. dataset/synthetic_positive/, ver
+    # synthesize_positives.py) — SOLO se suman a train, nunca a test: el
+    # set que decide "Final Model Recall" (criterio de selección entre
+    # corridas) tiene que seguir siendo grabaciones reales únicamente,
+    # igual que eval_frozen/.
+    for extra_dir in extra_train_dirs or []:
+        extra_files = list(extra_dir.glob("*.wav"))
+        logger.info("Fuente de train adicional %s: %d archivos", extra_dir, len(extra_files))
+        train_files.extend(extra_files)
     test_files = list(positive_test_dir.glob("*.wav"))
     total_length = _median_clip_length(test_files or train_files)
     logger.info("total_length (muestras @16kHz): %d", total_length)
@@ -335,6 +345,12 @@ def main() -> None:
         "max_negative_weight escalando por los negativos difíciles es la causa de un colapso",
     )
     parser.add_argument(
+        "--synthetic-positive-dir", type=Path, action="append", default=None,
+        help="Directorio con positivos sintéticos (ver synthesize_positives.py) a sumar SOLO a "
+        "train, nunca a test/eval — repetible para varias fuentes. Sin este flag no se usa nada "
+        "sintético, ni aunque dataset/synthetic_positive/ tenga archivos (opt-in explícito).",
+    )
+    parser.add_argument(
         "--model-name", type=str, default=None,
         help="Override de config['model_name'] — para barridos de semillas/ablations sin "
         "tener que crear un YAML por corrida (cada una cae en output/<model-name>.onnx propio)",
@@ -382,7 +398,8 @@ def main() -> None:
         logger.warning("Sin ruido de fondo (background_paths vacío) — la augmentación solo aplica reverb, no mezcla de ruido/música.")
 
     positive_features_train, positive_features_test, total_length = _make_features(
-        positive_train_dir, positive_test_dir, rir_paths, background_paths, config, model_dir, args.overwrite_features
+        positive_train_dir, positive_test_dir, rir_paths, background_paths, config, model_dir, args.overwrite_features,
+        extra_train_dirs=args.synthetic_positive_dir,
     )
 
     hard_negatives_dir = HERE / config.get("hard_negatives_dir", "dataset/hard_negatives")

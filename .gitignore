@@ -47,6 +47,11 @@ tools/wake_word_training/output/
 tools/wake_word_training/*.onnx
 tools/wake_word_training/*.tflite
 
+# Voces de Piper descargadas para síntesis de positivos (~60MB+ c/u,
+# ver synthesize_positives.py) — regenerables con
+# `python -m piper.download_voices`, no se versionan.
+tools/wake_word_training/piper_voices/
+
 # Clon de piper-sample-generator (repo git ajeno, solo para satisfacer el
 # import incondicional de openwakeword/train.py — no es código propio).
 tools/wake_word_training/piper-sample-generator/
