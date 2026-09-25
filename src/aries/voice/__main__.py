@@ -12,6 +12,20 @@ hace automáticamente.
 from __future__ import annotations
 
 import asyncio
+import sys
+
+# Shim: la consola de Windows (y cualquier archivo de log armado
+# redirigiendo stdout/stderr, ej. `python -m aries.voice > log.txt 2>&1`)
+# usa por default la codepage del sistema (cp1252/cp850), no UTF-8 — los
+# acentos/ñ/¿/¡ de los mensajes de `structlog` (`get_logger`, más abajo)
+# salen como mojibake ("Versi�n") tanto en consola como en el archivo
+# redirigido. Mismo tipo de shim que ya usa `run_training.py` para el
+# mismo problema con la consola de Windows. Reconfigurar acá, antes de
+# que `get_logger()` emita nada, alcanza para los dos casos porque el
+# archivo redirigido hereda el stream ya reconfigurado del proceso.
+if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 from ..config.settings import Settings
 from ..logging import get_logger
