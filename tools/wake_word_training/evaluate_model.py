@@ -41,6 +41,7 @@ from pathlib import Path
 
 import numpy as np
 from scipy.io import wavfile
+from scipy.stats import rankdata
 
 HERE = Path(__file__).resolve().parent
 
@@ -155,6 +156,41 @@ def _frr_at_fixed_fa_per_hour(
     return float(threshold), 1 - recall
 
 
+def _describe_scores(name: str, scores: np.ndarray) -> None:
+    """Distribución de scores crudos — responde "¿aprendió algo y el
+    punto de operación quedó mal, o no aprendió nada?" (pedido del
+    supervisor, 2026-09-24): un modelo que aprendió señal real muestra
+    positivos desplazados hacia arriba aunque estén todos por debajo de
+    los umbrales de la grilla de `--thresholds`; un modelo colapsado
+    tiene la misma distribución (~0) para positivos y negativos."""
+    if len(scores) == 0:
+        print(f"  {name}: sin datos")
+        return
+    p = np.percentile(scores, [0, 25, 50, 75, 90, 95, 99, 100])
+    print(
+        f"  {name}: n={len(scores)} min={p[0]:.5f} p25={p[1]:.5f} mediana={p[2]:.5f} "
+        f"p75={p[3]:.5f} p90={p[4]:.5f} p95={p[5]:.5f} p99={p[6]:.5f} max={p[7]:.5f}"
+    )
+
+
+def _auc(pos_scores: np.ndarray, neg_scores: np.ndarray) -> float:
+    """AUC vía Mann-Whitney U (rangos, sin depender de sklearn): la
+    probabilidad de que un positivo elegido al azar tenga score mayor
+    que un negativo elegido al azar. 0.5 = el modelo no distingue nada
+    (equivalente a azar); 1.0 = separación perfecta. Un AUC alto con
+    falso_rechazo igual de alto en la tabla de umbrales significaría
+    "aprendió a separar, pero el punto de operación/calibración está
+    mal" — un AUC ~0.5 significaría "no aprendió nada", conclusiones
+    con acciones muy distintas."""
+    if len(pos_scores) == 0 or len(neg_scores) == 0:
+        return float("nan")
+    all_scores = np.concatenate([pos_scores, neg_scores])
+    ranks = rankdata(all_scores)
+    n_pos = len(pos_scores)
+    sum_ranks_pos = ranks[:n_pos].sum()
+    return float((sum_ranks_pos - n_pos * (n_pos + 1) / 2) / (n_pos * len(neg_scores)))
+
+
 def _evaluate(model, key: str, eval_dir: Path, ambient_dir: Path, thresholds: list[float], fa_targets: list[float]) -> None:
     eval_scores = _score_eval_frozen(model, key, eval_dir)
     ambient_scores, ambient_hours = _score_ambient_stream(model, key, ambient_dir)
@@ -162,6 +198,13 @@ def _evaluate(model, key: str, eval_dir: Path, ambient_dir: Path, thresholds: li
     print(f"\n=== {key} ===")
     print(f"eval_frozen: n={len(eval_scores)} tomas (nunca vistas en entrenamiento)")
     print(f"ambient_audio: {ambient_hours:.2f} horas, {len(ambient_scores)} frames\n")
+
+    print("=== Distribución de scores crudos ===")
+    _describe_scores("eval_frozen (positivos)", eval_scores)
+    _describe_scores("ambient_audio (negativos)", ambient_scores)
+    auc = _auc(eval_scores, ambient_scores)
+    print(f"  AUC (eval_frozen vs ambient_audio): {auc:.4f} (0.5=azar, 1.0=separación perfecta)\n")
+
     print(f"{'umbral':>7s} {'recall':>8s} {'falso_rechazo':>14s} {'FA/hora':>10s}")
 
     for t in thresholds:
