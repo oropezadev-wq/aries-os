@@ -239,6 +239,47 @@ producción (steps=10000) queda pausada a pedido explícito del usuario
 hasta terminar de grabar el dataset (101/150-200 al momento de esta
 nota)** — no arrancarla todavía.
 
+## Decisión 5 bis: 3 chequeos del supervisor antes de seguir grabando (2026-09-24)
+
+Antes de seguir grabando hacia 150-200, el supervisor pidió 3 chequeos
+concretos, el más importante siendo si se están generando positivos
+sintéticos con Piper. Resultado completo con evidencia real (no
+hipótesis) en `PROGRESS.md`, sección "Entrenamiento del modelo custom".
+Resumen:
+
+1. **Piper sintético:** no se usa — Decisión 2 (arriba) ya lo explica:
+   sin checkpoint multi-speaker en español, bloqueo confirmado por el
+   propio mantenedor de openWakeWord.
+2. **Herencia de config entre corridas:** `--steps` no persiste (seguro
+   por diseño). Se encontró un riesgo real distinto: caché de features
+   en disco reusada silenciosamente sin `--overwrite-features` —
+   modelo actual verificado limpio, pero recomendado invertir el
+   default (pendiente confirmación del usuario).
+3. **Pendiente/cambiado de foco por el hallazgo #3 de abajo** (curva
+   completa a 1/2/5 FA/hora): implementado en `evaluate_model.py
+   --fa-targets`, pero el hallazgo del experimento de reentrenamiento
+   (ver PROGRESS.md) es más urgente que terminar de medir la curva del
+   modelo actual.
+
+**Hallazgo no pedido, encontrado durante el experimento de "pendiente
+50→101" que sí pidió el supervisor:** dos reentrenamientos controlados
+(50 tomas y 63 tomas, mismo `--steps 10000 --overwrite-features`
+explícito) colapsaron ambos a **recall≈0%** — peor que el modelo ya
+desplegado. Evidencia de `auto_train` escalando el peso de negativos
+dos veces en ambas corridas, consistente con la sospecha ya anotada en
+`training_config.yaml` sobre `max_negative_weight`. **Esto cambia la
+lectura de fondo: la cantidad de datos no parece ser la variable
+dominante — el pipeline de entrenamiento en sí parece inestable/no
+determinístico (sin seed fijada) y propenso a colapsar.** Ver
+PROGRESS.md para el detalle completo y las herramientas nuevas
+(`run_training.py --positive-train-dir`, `evaluate_model.py
+--fa-targets`, configs `training_config_diag50/101.yaml`).
+
+**No se investigó más profundo a propósito** (un ablation sin
+`hard_negatives`, o correr varias veces con seed fija para medir tasa
+de colapso, serían los siguientes pasos lógicos) — se para acá,
+pendiente de que el usuario/supervisor decida cómo seguir.
+
 ## Estado
 
 - [x] Frase decidida: "Oye Aries" (originalmente "Hola Aries", revisada 2026-09-21)
