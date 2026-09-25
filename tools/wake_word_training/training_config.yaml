@@ -83,14 +83,18 @@ layer_size: 32
 # `main()`), así que sobra dejar acá una key para una fuente que no está.
 #
 # Ajustado 2026-09-21, recalculado 2026-09-22 tras congelar 30 tomas en
-# dataset/eval_frozen/ (Decisión 5 del spec, punto 1 del supervisor):
-# positive_train quedó en 63 archivos (no 90) → con augmentation_rounds=2,
-# positive_features_train.npy tiene 63*2=126 filas, no 180. El motivo de
+# dataset/eval_frozen/ (Decisión 5 del spec, punto 1 del supervisor).
+# Re-recalculado 2026-09-24 (repartition_positive_split.py, ver
+# dataset/POSITIVE_SPLIT_MANIFEST.json): positive_test pasó de 8 a 28
+# archivos (era un criterio de selección demasiado ruidoso — confirmado
+# empíricamente eligiendo mal entre 7 modelos candidatos), así que
+# positive_train bajó de 63 a 43 → con augmentation_rounds=2,
+# positive_features_train.npy tiene 43*2=86 filas, no 126. El motivo de
 # NO usar "varios cientos" sigue siendo el mismo (`mmap_batch_generator`
 # recorre cada array de forma SECUENCIAL, no aleatoria, y no maneja
 # wraparound dentro de un mismo batch — pedir más filas de las que hay da
 # tamaño de batch inconsistente entre pasos), así que se deja positive=32
-# sin tocar (bien por debajo de las 126 filas disponibles).
+# sin tocar (bien por debajo de las 86 filas disponibles).
 #
 # hard_negatives: 80 tomas reales (20 por frase × 4 frases,
 # record_hard_negatives.py) → 80*2=160 filas aumentadas. Mismo criterio

@@ -292,6 +292,31 @@ Ambas hipótesis (régimen de datos, `max_negative_weight`) quedan
 reabiertas — la evidencia que las sostenía o refutaba era el bug.
 Pendiente de que el usuario/supervisor decida cómo seguir.
 
+**Regla metodológica adoptada (2026-09-24) — la lección más cara de esta
+sesión:** la varianza entre corridas con datos y config idénticos
+(6.7%–63.3% de recall, ver tabla en PROGRESS.md) es más grande que
+cualquier efecto que se esté tratando de medir (ablation, síntesis,
+cantidad de datos). Mientras eso siga así, **ningún resultado de una
+sola corrida es una conclusión válida.** De ahora en más, todo resultado
+de entrenamiento que se use para decidir algo (no solo para curiosidad)
+se reporta como **mediana de al menos 3 corridas con semillas distintas,
+con el rango (mín-máx)** — nunca un número de una corrida sola. Un rango
+que se angosta al cambiar algo (ej. más datos, síntesis) es la señal de
+que ese cambio realmente ayudó; un solo número mejor no lo es, puede ser
+la misma varianza de siempre.
+
+**Selección de modelo — criterio de selección arreglado (2026-09-24):**
+`positive_test` tenía 8 archivos, insuficiente para elegir entre
+corridas con confianza (eligió mal entre 7 candidatos frente a
+`eval_frozen`, ver arriba). `repartition_positive_split.py` (nuevo,
+mismo patrón que el carve-out de `eval_frozen`, seed fija documentada en
+`dataset/POSITIVE_SPLIT_MANIFEST.json`) llevó `positive_test` de 8 a 28
+archivos (`positive_train` bajó de 63 a 43) sin tocar `eval_frozen/`.
+Disciplina de selección que sigue rigiendo: elegir el modelo candidato
+por `positive_test` (ahora con n=28, menos ruidoso) **antes** de mirar
+`eval_frozen`, y reportar el número final de `eval_frozen` una sola vez,
+sobre el modelo ya elegido — nunca al revés.
+
 ## Estado
 
 - [x] Frase decidida: "Oye Aries" (originalmente "Hola Aries", revisada 2026-09-21)
