@@ -249,31 +249,42 @@ Resumen:
 
 1. **Piper sintético:** no se usa — Decisión 2 (arriba) ya lo explica:
    sin checkpoint multi-speaker en español, bloqueo confirmado por el
-   propio mantenedor de openWakeWord.
+   propio mantenedor de openWakeWord. **Corrección del usuario:** eso
+   bloquea esa herramienta puntual (`piper-sample-generator`), no la
+   idea de sintéticos en español — varias voces *single-speaker* en
+   español (`rhasspy/piper-voices`, es_MX-claude ya local, es_MX-ald y
+   comunidad cortana/gevy por descargar) sintetizando cada una por
+   separado + perturbación de velocidad/pitch dan diversidad de
+   hablante real en el idioma correcto, cosa que una sola voz
+   perturbada no da. Pendiente de implementar.
 2. **Herencia de config entre corridas:** `--steps` no persiste (seguro
    por diseño). Se encontró un riesgo real distinto: caché de features
    en disco reusada silenciosamente sin `--overwrite-features` —
-   modelo actual verificado limpio, pero recomendado invertir el
-   default (pendiente confirmación del usuario).
-3. **Pendiente/cambiado de foco por el hallazgo #3 de abajo** (curva
-   completa a 1/2/5 FA/hora): implementado en `evaluate_model.py
-   --fa-targets`, pero el hallazgo del experimento de reentrenamiento
-   (ver PROGRESS.md) es más urgente que terminar de medir la curva del
-   modelo actual.
+   modelo actual verificado limpio. **El usuario confirmó invertir el
+   default** (pendiente de implementar).
+3. **Confirmado:** mismo `eval_frozen/` (30 archivos, sin tocar desde
+   2026-09-22) en las 4 evaluaciones comparadas.
 
-**Hallazgo no pedido, encontrado durante el experimento de "pendiente
-50→101" que sí pidió el supervisor:** dos reentrenamientos controlados
-(50 tomas y 63 tomas, mismo `--steps 10000 --overwrite-features`
-explícito) colapsaron ambos a **recall≈0%** — peor que el modelo ya
-desplegado. Evidencia de `auto_train` escalando el peso de negativos
-dos veces en ambas corridas, consistente con la sospecha ya anotada en
-`training_config.yaml` sobre `max_negative_weight`. **Esto cambia la
-lectura de fondo: la cantidad de datos no parece ser la variable
-dominante — el pipeline de entrenamiento en sí parece inestable/no
-determinístico (sin seed fijada) y propenso a colapsar.** Ver
-PROGRESS.md para el detalle completo y las herramientas nuevas
-(`run_training.py --positive-train-dir`, `evaluate_model.py
---fa-targets`, configs `training_config_diag50/101.yaml`).
+**Hallazgo no pedido, encontrado durante el experimento de reentrenamiento
+que sí pidió el supervisor — corregido tras una revisión del usuario:**
+el experimento comparó 50 vs **63** tomas, no 50 vs 101 (`101` es el
+total grabado, no el tamaño de entrenamiento — 30 de esas 101 están
+congeladas en `eval_frozen/`; el N de entrenamiento del modelo
+desplegado y de este experimento es el mismo, 63). Nunca se probó un N
+mayor a 63. Con eso corregido, el hallazgo real (vía distribución de
+scores + AUC, `evaluate_model.py` nuevo): **los dos reentrenamientos
+frescos (50 y 63) colapsaron a AUC=0.5000 exacto — cero señal
+aprendida, no una mala calibración.** El modelo ya desplegado (mismas
+63 tomas) tiene AUC=0.988 — sí aprendió separación real, su problema es
+consistencia entre tomas individuales, no ausencia de aprendizaje. Solo
+1 de 3 corridas reales con N∈{50,63} preservó señal — evidencia de
+inestabilidad de la corrida (`auto_train` escaló `max_negative_weight`
+dos veces en ambas corridas colapsadas, mismo mecanismo ya sospechado
+en `training_config.yaml`), no evidencia sobre si más datos ayudaría o
+no (sigue sin testearse). Ver PROGRESS.md para el detalle completo y
+las herramientas nuevas (`run_training.py --positive-train-dir`,
+`evaluate_model.py --fa-targets`/AUC, configs
+`training_config_diag50/101.yaml`).
 
 **No se investigó más profundo a propósito** (un ablation sin
 `hard_negatives`, o correr varias veces con seed fija para medir tasa
