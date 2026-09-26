@@ -264,6 +264,52 @@ PowerShell a recordar cada vez): `voice/__main__.py` ahora reconfigura
 `sys.stdout`/`sys.stderr` a UTF-8 al arrancar, mismo shim que ya usaba
 `run_training.py` para el mismo problema (commit `528b514`).
 
+#### `neural-chat` no emitía su token de parada — diagnóstico corregido (2026-09-25)
+
+Al medir la latencia de Ollama con push-to-talk (una medición de 263ms
+sospechada de no ser real — `Measure-Command` se tragó la salida), el
+supervisor miró el log completo y encontró algo más importante que la
+latencia: pedido "hola", `neural-chat` **generó una conversación entera
+de 4 turnos** actuando de usuario y asistente, sin parar. Eso explica
+mejor el timeout que "carga en frío" — coincide con el otro error del
+mismo log (el Planner no podía parsear el JSON, porque el modelo estaba
+escribiendo diálogo libre en vez de responder con la intención
+estructurada).
+
+**3 cambios pedidos, implementados en orden de retorno esperado:**
+
+1. **`format="json"` en la llamada de `_parse_intent()`** (`Planner` →
+   `OllamaProvider.complete()`): restringe la salida a JSON válido a
+   nivel de decodificación de Ollama, no depende de que el modelo "se
+   porte bien". Bug real encontrado al implementarlo:
+   `options.update(kwargs)` mezclaba `format` dentro de `options` junto
+   con `temperature` — ahí Ollama lo ignora en silencio, ya que
+   `format` es un campo de nivel superior del payload (junto a
+   `model`/`prompt`/`options`), no una opción de sampling. Corregido:
+   se saca de `kwargs` antes de mezclar el resto.
+2. **Techo de tokens** (`Settings.intent_llm_max_tokens`, default 512,
+   nuevo) — pasado como `max_tokens` en la misma llamada, así un modelo
+   descontrolado falla truncado en un par de segundos en vez de colgar
+   hasta el timeout completo del cliente HTTP (~30 s).
+3. **Cambio de modelo:** `LLM_MODEL=qwen2.5:3b` en `.env` (local, sin
+   tocar código — `Settings.llm_model` sigue con default `"neural-chat"`
+   a propósito). `qwen2.5:3b` (1,9 GB, descargado con `ollama pull`) en
+   vez de `neural-chat` (4,1 GB) — más liviano para 8 GB de RAM, más
+   rápido, sigue instrucciones de formato de forma más confiable.
+
+Tests nuevos, mismo patrón "verde en tests, roto en la realidad" que ya
+se vio con la api_key — verificar el camino real, no solo que
+`OllamaProvider` sepa hacer algo si se lo piden: `test_planner.py`
+verifica que `_parse_intent()` realmente pida `format="json"` y el
+`max_tokens` configurado; `test_ollama_provider.py` verifica que
+`format` quede en el nivel superior del payload, no dentro de
+`options`. Suite completa: 486 passed. Commit `84fe6b2`.
+
+**Pendiente del usuario:** volver a medir con el comando real
+(`Invoke-WebRequest` a `/api/generate`) para confirmar si sigue
+habiendo carga en frío ahora que el modelo cambió y ya no cuelga por
+generación descontrolada.
+
 ### Registro previo al contador vigente (no cuenta)
 
 - **2026-09-15 — descartado como día 1.** Se había anotado como día 1, pero del 14 al 20 el usuario casi no usó Aries (equipo apagado la mayoría de esos días). El contador reinició el 2026-09-20.
