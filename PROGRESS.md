@@ -376,6 +376,82 @@ campo. Suite completa: 488 passed. Commit `ec8ec29`.
 `OLLAMA_KEEP_ALIVE=-1` tome efecto) y volver a medir el escenario de
 rutina-tras-horas-sin-uso con los 3 cambios en su lugar.
 
+#### HALLAZGO CRÍTICO — la GPU (RTX 3070) no acelera nada y crasheó bajo carga (2026-09-26)
+
+El supervisor pidió 3 cosas antes de que el usuario reinicie Ollama:
+bajar `intent_llm_max_tokens` con una medición real (no estimada), y
+decidir sobre GPU vs CPU y sobre `llama3.2:1b` vs `qwen2.5:3b`. Al
+investigar la GPU apareció algo más grave que cualquiera de las 3
+preguntas originales.
+
+- **La GPU (NVIDIA RTX 3070, 8GB) está correctamente detectada y
+  configurada por Ollama** (`library=CUDA`, 37/37 capas offloadeadas,
+  confirmado en `%LOCALAPPDATA%\Ollama\server.log`) — no es un
+  problema de driver/config faltante.
+- **Pero no acelera nada:** midiendo con `num_gpu:0` (CPU forzado, sin
+  riesgo) el throughput real es **~5-6 tok/s** — prácticamente lo
+  mismo que los "~7 tok/s" medidos el 2026-09-25 y atribuidos a la
+  GPU. Un RTX 3070 sano debería dar 40-80+ tok/s para un modelo de 3B
+  Q4. Esto significa que la GPU probablemente ya estaba degradada
+  *antes* de esta sesión, no es algo que empezó ahora.
+- **Y crasheó de verdad durante la medición:** `server.log` muestra
+  `CUDA error: unknown error` en `ggml_backend_cuda_buffer_set_tensor`
+  / `cudaStreamSynchronize`, y `nvidia-smi` desde entonces devuelve
+  literalmente *"GPU is lost. Reboot the system to recover this GPU"*
+  — sigue así, no se recuperó sola ni con nuevas llamadas a
+  `nvidia-smi`. **No hay evento de TDR/driver de Windows correspondiente
+  en el Visor de Eventos** (revisado, nada en `System` alrededor del
+  horario del crash) — es un fallo a nivel de CUDA/proceso, no (todavía)
+  un reset de driver a nivel de Windows.
+- **Conecta con el historial ya documentado** de esta máquina
+  apagándose bajo carga (ver "Diagnóstico de memoria de Windows" más
+  abajo) — un componente más (GPU, además de CPU/RAM/WSL) mostrando
+  problemas bajo carga real, no una casualidad aislada.
+- **Un reinicio de Ollama probablemente NO alcance** — `nvidia-smi`
+  pide explícitamente un reboot del sistema completo para recuperar
+  la GPU. Esto es más urgente que el reinicio de Ollama que el usuario
+  ya tenía planeado para probar el escenario de rutinas.
+
+**`llama3.2:1b` — probado, no recomendado:** con los mismos 4 prompts
+reales del Planner (CPU forzado en ambos para comparación justa),
+~10,7 tok/s (1,8x más rápido que `qwen2.5:3b`) pero **3 de 4 casos con
+acción incorrecta** — "qué hora es" eligió `filesystem.open_file` en
+vez de `steps: []`; "creá un archivo con el texto X" perdió el
+contenido pedido; un pedido de 2 pasos (listar archivos + git status)
+solo ejecutó 1. Se mantiene `qwen2.5:3b` — la calidad del plan importa
+más que 1,8x de velocidad para esta tarea específica.
+
+**`intent_llm_max_tokens`: medido, no estimado.** 4 prompts reales del
+Planner (catálogo real de los 4 agentes, esquema real, `num_gpu:0`)
+contra `qwen2.5:3b`: `eval_count` observado 17-60 tokens. Bajado de
+512 a **200** (margen >3x sobre el máximo medido) — commit `7956cb1`.
+El motivo no es timeout (ya cubierto desde el commit anterior): a
+~5-6 tok/s reales, 512 tokens son >70s, inusable para voz aunque no
+dispare ningún timeout.
+
+**Timeouts recalculados con el throughput real (~5-6 tok/s, no ~7):**
+`llm_request_timeout_seconds` 90→105 (65s carga fría + 200/6≈33s
+generación al techo ≈ 98s, más margen). `voice_api_request_timeout_seconds`
+90→120 (cubre dos llamadas secuenciales a Ollama del lado de la API —
+interpretar intención, con techo, y `generate_response` de `brain/`,
+**que todavía NO tiene techo de tokens** — riesgo residual anotado
+explícitamente, no resuelto en este commit, sin caso real que lo haya
+disparado todavía).
+
+Commit `7956cb1`. Suite completa: 488 passed, sin cambios de
+comportamiento en tests existentes.
+
+**Pendiente, decisión del usuario/supervisor, no tomada acá:**
+- Diagnóstico/reparación de la GPU (reboot como primer paso obvio;
+  si el problema persiste después del reboot, esto probablemente
+  necesite investigación de hardware/drivers más a fondo — reinstalar
+  drivers NVIDIA, revisar temperaturas/alimentación de la GPU, o
+  aceptar correr Ollama forzado a CPU de forma permanente
+  `OLLAMA_GPU_OVERHEAD`/`num_gpu:0` hasta resolverlo).
+- Poner un techo de tokens también en `brain/generate_response` (el
+  riesgo residual anotado arriba) — no pedido esta ronda, señalado
+  para la próxima.
+
 ### Registro previo al contador vigente (no cuenta)
 
 - **2026-09-15 — descartado como día 1.** Se había anotado como día 1, pero del 14 al 20 el usuario casi no usó Aries (equipo apagado la mayoría de esos días). El contador reinició el 2026-09-20.
