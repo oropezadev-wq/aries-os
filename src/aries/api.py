@@ -108,7 +108,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     logger.info("API Aries arrancando", environment=settings.environment)
 
-    llm_provider: ILLMProvider = OllamaProvider(settings)
+    llm_provider: ILLMProvider = OllamaProvider(settings, timeout=settings.llm_request_timeout_seconds)
     kernel = Kernel(settings, _memory, llm_provider, _event_bus, _agent_manager, _message_bus)
     # Cliente de Redis dedicado a `/health`, reusado entre llamadas (ninguna
     # abre una conexión nueva). Se crea acá y se cierra abajo, por el mismo

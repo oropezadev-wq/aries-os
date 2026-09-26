@@ -101,6 +101,20 @@ async def test_complete_sends_format_at_top_level(settings: Settings) -> None:
 
 
 @pytest.mark.asyncio
+async def test_client_respects_configured_timeout(settings: Settings) -> None:
+    """Hallazgo del supervisor (2026-09-25, medido con Invoke-WebRequest
+    real): una carga en frío de Ollama tarda ~65s — el default anterior
+    de 30s garantizaba fallo en cualquier camino frío. Sin este test, el
+    valor pasado por `api.py` (`settings.llm_request_timeout_seconds`)
+    podría quedar sin usarse y nadie lo notaría hasta production."""
+    provider = OllamaProvider(settings, timeout=90.0)
+
+    assert provider._client.timeout.read == 90.0
+
+    await provider.close()
+
+
+@pytest.mark.asyncio
 async def test_embed_success(settings: Settings) -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content.decode())

@@ -110,7 +110,8 @@ param(
     [int]$MaxBackoffSeconds = 300,
     [int]$StableAfterSeconds = 300,
     [int]$WslTimeoutSeconds = 10,
-    [double]$SlowIterationSeconds = 10
+    [double]$SlowIterationSeconds = 10,
+    [string]$OllamaBaseUrl = "http://localhost:11434"
 )
 
 $ErrorActionPreference = "Stop"
@@ -245,6 +246,53 @@ function Start-ApiProcess {
     Write-Log "API arrancada (PID $($proc.Id)) — log: $($paths.Out)"
 }
 
+function Get-EnvValue {
+    # Lee una clave de .env a mano (sin depender de pydantic-settings, que
+    # solo vive del lado Python) — para que la precarga de Ollama use el
+    # MISMO modelo que Settings.llm_model va a resolver, sin mantener el
+    # nombre duplicado a mano en este script. Última ocurrencia gana
+    # (mismo criterio que python-dotenv si la clave está repetida).
+    param([string]$Name, [string]$Default)
+    $envPath = Join-Path $RepoRoot ".env"
+    if (Test-Path $envPath) {
+        $line = Get-Content $envPath | Where-Object { $_ -match "^\s*$Name\s*=" } | Select-Object -Last 1
+        if ($line) {
+            return ($line -split '=', 2)[1].Trim()
+        }
+    }
+    return $Default
+}
+
+function Start-OllamaPreload {
+    # Precarga el modelo de Ollama con una llamada corta y en BACKGROUND
+    # (Start-Job, no bloquea el resto del arranque) apenas la API está
+    # sana. Pedido del supervisor (2026-09-25, medido con Invoke-WebRequest
+    # real contra qwen2.5:3b): una carga en frío tarda ~65s — bloquear
+    # aquí haría que cada reinicio de desarrollo de start-aries.ps1 tardara
+    # esos ~65s más, peor que el problema que resuelve. El escenario real
+    # que motiva esto es una rutina disparándose horas después de arrancar
+    # (docs/specs/Routines.spec.md), no la primera orden inmediatamente
+    # tras este script — ahí unos segundos extra de precarga en background
+    # no importan. Redundante en teoría con OLLAMA_KEEP_ALIVE=-1 (variable
+    # de entorno del PROCESO de Ollama, fuera de este repo — se configura
+    # una vez, a mano, no en este script) pero cubre el caso de que Ollama
+    # se reinicie por su cuenta sin que Aries se entere.
+    $model = Get-EnvValue -Name "LLM_MODEL" -Default "neural-chat"
+    Write-Log "Disparando precarga de Ollama en background (modelo '$model', $OllamaBaseUrl)..."
+    $job = Start-Job -ScriptBlock {
+        param($ModelName, $BaseUrl)
+        try {
+            $body = @{ model = $ModelName; prompt = "hola"; stream = $false; options = @{ num_predict = 1 } } | ConvertTo-Json
+            Invoke-WebRequest -Uri "$BaseUrl/api/generate" -Method Post -Body $body -ContentType "application/json" -TimeoutSec 120 -UseBasicParsing | Out-Null
+        } catch {
+            # No-fatal a propósito: si Ollama no está corriendo todavía o
+            # tarda más de 120s, el primer pedido real simplemente paga la
+            # carga en frío — igual que hoy, sin este preload.
+        }
+    } -ArgumentList $model, $OllamaBaseUrl
+    Write-Log "Precarga de Ollama disparada (job $($job.Id), no bloquea el arranque)."
+}
+
 function Start-VoiceProcess {
     $paths = New-TimestampedLogPaths -Prefix "voice"
     $env:LOG_LEVEL = $LogLevel
@@ -361,6 +409,7 @@ Wait-Until -Condition { Test-RedisReady } -TimeoutSeconds $RedisReadyTimeoutSeco
 
 Start-ApiProcess
 Wait-Until -Condition { Test-ApiReady } -TimeoutSeconds $ApiReadyTimeoutSeconds -Description "API (GET /health)" | Out-Null
+Start-OllamaPreload
 
 Start-VoiceProcess
 

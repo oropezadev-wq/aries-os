@@ -697,3 +697,31 @@ class TestPushToTalk:
         pipeline = _make_push_to_talk_pipeline(player)  # config default: hotkey_combo=None
 
         assert pipeline._hotkey_listener is None
+
+
+class TestHttpClientTimeout:
+    """Hallazgo propio (2026-09-25, al implementar el pedido del
+    supervisor de subir el timeout de OllamaProvider a ~90s): el cliente
+    HTTP de VoicePipeline hacia POST /message tenía su PROPIO timeout de
+    30s hardcodeado, sin ningún test que lo verificara — el mismo patrón
+    "verde en tests, roto en la realidad" que ya se vio con la api_key.
+    Subir solo el timeout de Ollama no alcanza: una rutina disparada en
+    frío corta acá antes de que la API llegue a responder."""
+
+    @pytest.mark.asyncio
+    async def test_get_http_client_respects_configured_timeout(self) -> None:
+        config = VoicePipelineConfig(api_key=TEST_API_KEY, api_request_timeout_seconds=123.0)
+        pipeline = VoicePipeline(
+            wake_word=FakeWakeWordProvider(),
+            stt=FakeSTTProvider(),
+            tts=FakeTTSProvider(),
+            listener=ScriptedListener([]),
+            player=FakeSpeakerPlayer(),
+            message_bus=FakeMessageBus(),
+            config=config,
+        )
+
+        client = await pipeline._get_http_client()
+
+        assert client.timeout.read == 123.0
+        await pipeline.close()
