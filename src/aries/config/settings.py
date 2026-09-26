@@ -21,6 +21,14 @@ class Settings(BaseSettings):
     llm_provider: str = Field("ollama", description="Proveedor LLM")
     llm_model: str = Field("neural-chat", description="Modelo LLM")
     llm_base_url: HttpUrl = Field(HttpUrl("http://localhost:11434"), description="URL base del proveedor LLM")
+    intent_llm_max_tokens: int = Field(
+        512,
+        description="Techo de tokens (num_predict de Ollama) para la llamada del Planner que interpreta"
+        " la intención del usuario como JSON. Hallazgo del supervisor (2026-09-25): sin techo, un modelo"
+        " que no emite su token de parada (visto con neural-chat, se inventó una conversación entera de"
+        " 4 turnos en vez de responder JSON) cuelga hasta el timeout completo del cliente HTTP (~30s) en"
+        " vez de fallar en un par de segundos con salida truncada.",
+    )
     voice_enabled: bool = Field(True, description="Activa el soporte de voz")
     api_host: str = Field(
         "127.0.0.1",

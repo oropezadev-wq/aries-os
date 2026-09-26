@@ -71,6 +71,36 @@ async def test_complete_respects_num_predict(settings: Settings) -> None:
 
 
 @pytest.mark.asyncio
+async def test_complete_sends_format_at_top_level(settings: Settings) -> None:
+    """`format` es un campo de nivel superior en la API de Ollama (junto a
+    `model`/`prompt`/`options`), no una opción de sampling — verifica que
+    no termine metido dentro de `options` junto con `temperature` (bug
+    real encontrado 2026-09-25: `options.update(kwargs)` sin sacarlo
+    primero lo mandaba mal ubicado, donde Ollama lo ignora en silencio)."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode())
+        assert body["format"] == "json"
+        assert "format" not in body["options"]
+
+        return httpx.Response(
+            200,
+            json={"response": '{"ok": true}', "eval_count": 10, "prompt_eval_count": 2},
+        )
+
+    transport = httpx.MockTransport(handler)
+    client = httpx.AsyncClient(base_url="http://localhost:11434", transport=transport)
+    provider = OllamaProvider(settings)
+    provider._client = client
+
+    result = await provider.complete("Hola", format="json")
+
+    assert result.content == '{"ok": true}'
+
+    await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_embed_success(settings: Settings) -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content.decode())

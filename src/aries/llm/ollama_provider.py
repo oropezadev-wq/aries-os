@@ -50,6 +50,17 @@ class OllamaProvider(ILLMProvider):
         if not isinstance(prompt, str):
             raise TypeError("El prompt debe ser una cadena")
 
+        # `format` es un campo de nivel superior en la API de Ollama
+        # (junto a `model`/`prompt`/`options`, no una opción de sampling)
+        # — ej. `format="json"` restringe la salida a JSON válido a nivel
+        # de decodificación, en vez de depender de que el modelo "se
+        # porte bien" (hallazgo del supervisor, 2026-09-25: neural-chat
+        # generaba diálogo libre en vez de JSON cuando no paraba de
+        # generar, lo que el Planner no podía parsear). Se saca de
+        # `kwargs` antes de mezclar el resto en `options`, para no
+        # mandarlo mal ubicado.
+        fmt = kwargs.pop("format", None)
+
         options: dict[str, Any] = {"temperature": temperature}
         options.update(kwargs)
 
@@ -59,6 +70,8 @@ class OllamaProvider(ILLMProvider):
             "stream": False,
             "options": options,
         }
+        if fmt is not None:
+            payload["format"] = fmt
         if max_tokens is not None:
             payload["options"]["num_predict"] = max_tokens
 

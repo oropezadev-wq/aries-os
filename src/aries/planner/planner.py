@@ -71,11 +71,13 @@ class Planner:
         memory: IMemory,
         redis_client: redis_asyncio.Redis | None = None,
         pending_confirmation_ttl_seconds: float = 120.0,
+        intent_llm_max_tokens: int = 512,
     ) -> None:
         self.llm_provider = llm_provider
         self.agent_manager = agent_manager
         self.event_bus = event_bus
         self.memory = memory
+        self._intent_llm_max_tokens = intent_llm_max_tokens
         # Auditoría de seguridad 2026-09-23, hallazgo CRÍTICO #1: dónde vive
         # una acción pendiente de confirmación entre el pedido original y
         # `confirm()`. Opcional (default None) para no romper la
@@ -327,7 +329,17 @@ class Planner:
 
         for attempt in range(_MAX_INTENT_ATTEMPTS):
             try:
-                response = await self.llm_provider.complete(prompt, temperature=0.0)
+                # format="json" restringe la salida a JSON válido a nivel
+                # de decodificación (Ollama) en vez de depender de que el
+                # modelo "se porte bien" — y max_tokens pone un techo para
+                # que un modelo que no emite su token de parada falle
+                # rápido y truncado en vez de colgar hasta el timeout
+                # completo del cliente HTTP (hallazgo del supervisor,
+                # 2026-09-25). Proveedores que no reconozcan estos kwargs
+                # los ignoran vía **kwargs del contrato ILLMProvider.
+                response = await self.llm_provider.complete(
+                    prompt, temperature=0.0, format="json", max_tokens=self._intent_llm_max_tokens
+                )
             except Exception as error:
                 self.logger.error("El LLM falló al interpretar la intención", error=str(error))
                 return None

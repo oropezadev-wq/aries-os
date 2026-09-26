@@ -172,6 +172,7 @@ def get_planner() -> Planner:
         memory=_memory,
         redis_client=_confirmation_redis,
         pending_confirmation_ttl_seconds=settings.pending_confirmation_ttl_seconds,
+        intent_llm_max_tokens=settings.intent_llm_max_tokens,
     )
 
 

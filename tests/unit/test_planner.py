@@ -45,9 +45,11 @@ class FakeLLMProvider(ILLMProvider):
         self._responses = list(responses or [])
         self.raises = raises
         self.prompts: list[str] = []
+        self.calls: list[dict] = []
 
     async def complete(self, prompt: str, temperature: float = 0.7, max_tokens: int | None = None, **kwargs) -> LLMResponse:
         self.prompts.append(prompt)
+        self.calls.append({"temperature": temperature, "max_tokens": max_tokens, **kwargs})
         if self.raises:
             raise RuntimeError("LLM no disponible")
         if not self._responses:
@@ -124,6 +126,29 @@ class TestHandleBasicValidation:
 
         assert result.success is False
         assert result.error is not None
+
+    @pytest.mark.asyncio
+    async def test_parse_intent_requests_json_format_and_max_tokens(
+        self, agent_manager: AgentManager, memory: InMemoryStore
+    ) -> None:
+        """Hallazgo del supervisor (2026-09-25): sin `format="json"` el
+        Planner depende de que el modelo "se porte bien" y devuelva JSON
+        por las buenas — y sin un techo de tokens, un modelo que no emite
+        su token de parada cuelga hasta el timeout completo en vez de
+        fallar rápido. Verifica que el Planner realmente pida las dos
+        cosas en la llamada que interpreta la intención, no solo que
+        `OllamaProvider` sepa hacerlo si se lo piden (ver
+        test_ollama_provider.py) — el "verde en tests, roto en la
+        realidad" que ya se vio antes con la api_key era justo no
+        ejercitar el camino real de configuración."""
+        llm = FakeLLMProvider([_intent([])])
+        planner = Planner(llm, agent_manager, AsyncEventBus(), memory, intent_llm_max_tokens=256)
+
+        await planner.handle("hace algo")
+
+        assert len(llm.calls) == 1
+        assert llm.calls[0]["format"] == "json"
+        assert llm.calls[0]["max_tokens"] == 256
 
     @pytest.mark.asyncio
     async def test_llm_exception_during_parse_fails_gracefully(
