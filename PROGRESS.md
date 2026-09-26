@@ -310,6 +310,72 @@ verifica que `_parse_intent()` realmente pida `format="json"` y el
 habiendo carga en frío ahora que el modelo cambió y ya no cuelga por
 generación descontrolada.
 
+**Medido por el usuario (2026-09-25):** confirmado con
+`Invoke-WebRequest` real — primera llamada a `qwen2.5:3b` tardó 65s
+(carga en frío), segunda 352ms. El supervisor advirtió que la segunda
+medición podía ser engañosa (mismo prompt, posible reuso de contexto
+cacheado sin generación real) y pidió verificación propia antes de
+implementar nada más.
+
+**Verificación propia, con un prompt nunca visto antes:** `eval_count`
+(tokens generados de verdad) y `eval_duration` (tiempo de generación
+real, sin contar carga ni prompt eval) de la respuesta de Ollama —
+102 tokens en 14,52s = **~7 tokens/s en caliente**, `load_duration`
+≈0 (modelo ya cargado). Confirma la sospecha del supervisor: los
+352ms no eran generación real. Con un modelo lento (~7 tok/s, no está
+claro si es limitación de este hardware o algo puntual — `ollama ps`
+mostraba 100% GPU), hasta una respuesta corta en caliente tarda
+varios segundos.
+
+**3 cambios implementados, los 3 necesarios juntos** (motivo de
+fondo: una rutina disparándose tras horas sin uso —
+`docs/specs/Routines.spec.md` — es el caso que más importa, y sin
+esto cae en frío siempre):
+
+1. **`OLLAMA_KEEP_ALIVE=-1`** — variable de entorno del *proceso* de
+   Ollama, no de este repo. Seteada persistente a nivel de usuario de
+   Windows (`setx`, ya no en la sesión sino permanente). **Requiere
+   reiniciar Ollama** (el proceso corriendo ya arrancó sin esta
+   variable, no la ve hasta relanzarse). Costo real, anotado para no
+   perderlo de vista: ~2GB de RAM retenidos permanentemente — con 8GB
+   en una máquina que ya se apagó bajo carga antes (ver diagnóstico
+   de memoria más abajo), esto suma al mismo riesgo, no es gratis.
+2. **Precarga en `start-aries.ps1`** (`Start-OllamaPreload`, nueva
+   función): llamada corta a `/api/generate` en **background**
+   (`Start-Job`) apenas la API está sana — decisión de diseño propia:
+   no bloquea el arranque (bloquear cada reinicio de desarrollo por
+   ~65s adicionales sería peor que el problema que resuelve). Lee
+   `LLM_MODEL` de `.env` (nuevo helper `Get-EnvValue`) en vez de
+   duplicar el nombre del modelo a mano en el script.
+3. **Timeout del cliente a ~90s, en dos capas, no una** — hallazgo
+   propio al implementar esto, no parte del pedido original:
+   `OllamaProvider` (`Settings.llm_request_timeout_seconds`, nuevo)
+   **y también** `VoicePipeline` → `POST /message`
+   (`Settings.voice_api_request_timeout_seconds` +
+   `VoicePipelineConfig.api_request_timeout_seconds`, nuevos).
+   `VoicePipeline` tenía su **propio** timeout de 30s hardcodeado
+   hacia la API — subir solo el de Ollama no alcanza, la rutina corta
+   ahí antes de que la API llegue a responder.
+
+**Nota dejada a propósito, no resuelta:** a ~7 tok/s reales, el techo
+de `intent_llm_max_tokens` (512, ver arriba) sumado a una carga en
+frío puede superar estos 90s si el modelo llega a generar el máximo
+— este timeout cubre el caso típico (carga fría + una respuesta
+razonable), no el peor caso combinado. `OLLAMA_KEEP_ALIVE` + la
+precarga son la mitigación real de la carga fría (deberían dejar el
+modelo permanentemente caliente); el timeout es el resguardo
+residual, no la solución de fondo. Pendiente de decisión: si vale la
+pena bajar el techo de tokens dado el throughput medido.
+
+Tests nuevos (mismo patrón "verde en tests, roto en la realidad" ya
+visto varias veces): `OllamaProvider`/`VoicePipeline` realmente
+respetan el timeout configurado, no solo que `Settings` tenga el
+campo. Suite completa: 488 passed. Commit `ec8ec29`.
+
+**Pendiente del usuario:** reiniciar Ollama (para que
+`OLLAMA_KEEP_ALIVE=-1` tome efecto) y volver a medir el escenario de
+rutina-tras-horas-sin-uso con los 3 cambios en su lugar.
+
 ### Registro previo al contador vigente (no cuenta)
 
 - **2026-09-15 — descartado como día 1.** Se había anotado como día 1, pero del 14 al 20 el usuario casi no usó Aries (equipo apagado la mayoría de esos días). El contador reinició el 2026-09-20.
