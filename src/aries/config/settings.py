@@ -22,21 +22,25 @@ class Settings(BaseSettings):
     llm_model: str = Field("neural-chat", description="Modelo LLM")
     llm_base_url: HttpUrl = Field(HttpUrl("http://localhost:11434"), description="URL base del proveedor LLM")
     intent_llm_max_tokens: int = Field(
-        512,
+        200,
         description="Techo de tokens (num_predict de Ollama) para la llamada del Planner que interpreta"
         " la intención del usuario como JSON. Hallazgo del supervisor (2026-09-25): sin techo, un modelo"
         " que no emite su token de parada (visto con neural-chat, se inventó una conversación entera de"
-        " 4 turnos en vez de responder JSON) cuelga hasta el timeout completo del cliente HTTP (~30s) en"
-        " vez de fallar en un par de segundos con salida truncada.",
+        " 4 turnos en vez de responder JSON) cuelga hasta el timeout completo del cliente HTTP en vez de"
+        " fallar rápido. Bajado de 512 a 200 el 2026-09-26 (mismo supervisor, por latencia de voz, no por"
+        " timeout — a ~5-7 tok/s reales, 512 tokens son >70s, inusable para voz aunque no dispare ningún"
+        " timeout): medido con qwen2.5:3b sobre 4 pedidos reales del Planner (catálogo real de agentes,"
+        " esquema real), eval_count observado 17-60 tokens — 200 deja margen >3x sobre el máximo medido.",
     )
     llm_request_timeout_seconds: float = Field(
-        90.0,
+        105.0,
         description="Timeout del cliente HTTP de OllamaProvider hacia Ollama. Medido 2026-09-25 con"
-        " qwen2.5:3b (Invoke-WebRequest real, no Measure-Command): carga en frío ~65s, generación en"
-        " caliente ~7 tokens/s. 30s (el default anterior) garantiza fallo en cualquier camino frío. OJO:"
-        " a ~7 tok/s, el techo de intent_llm_max_tokens (512) sumado a una carga en frío puede superar"
-        " estos 90s si el modelo llega a generar el máximo — este valor cubre el caso típico (carga fría"
-        " + una respuesta razonable), no el peor caso combinado; OLLAMA_KEEP_ALIVE=-1 + la precarga en"
+        " qwen2.5:3b (Invoke-WebRequest real, no Measure-Command): carga en frío ~65s. Medido 2026-09-26"
+        " (num_gpu=0 forzado — la GPU de esta máquina resultó no acelerar nada, RTX 3070 dando ~5-7 tok/s,"
+        " lo mismo que CPU puro, y crasheó bajo carga durante esta misma medición, ver PROGRESS.md):"
+        " generación real ~5-6 tokens/s. Subido de 90 a 105 el 2026-09-26 para cubrir el peor caso"
+        " combinado con intent_llm_max_tokens ya bajado a 200: ~65s de carga fría + 200/6≈33s de"
+        " generación al techo ≈ 98s, más margen. OLLAMA_KEEP_ALIVE=-1 + la precarga en"
         " start-aries.ps1 son la mitigación real de la carga fría, este timeout es el resguardo residual.",
     )
     voice_enabled: bool = Field(True, description="Activa el soporte de voz")
@@ -110,12 +114,16 @@ class Settings(BaseSettings):
         description="URL base de la API (POST /message) que el pipeline de Voice consume como cliente HTTP — ver docs/specs/Voice.spec.md, decisión 2",
     )
     voice_api_request_timeout_seconds: float = Field(
-        90.0,
+        120.0,
         description="Timeout del cliente HTTP de VoicePipeline hacia POST /message — capa distinta pero"
-        " mismo motivo que llm_request_timeout_seconds (OllamaProvider): si Voice corta a los 30s "
-        " mientras la API todavía espera a Ollama con un timeout más generoso, una rutina disparada tras"
-        " horas sin uso (el caso que motiva todo esto, docs/specs/Routines.spec.md) sigue fallando en frío"
-        " aunque el timeout de Ollama ya esté arreglado — hallazgo propio al implementar el pedido del"
+        " mismo motivo que llm_request_timeout_seconds (OllamaProvider), con margen extra (120 vs 105):"
+        " este único request de Voice puede esperar sobre DOS llamadas secuenciales a Ollama del lado de"
+        " la API (interpretar intención, con techo de intent_llm_max_tokens — y generar la respuesta"
+        " final en brain/__init__.py, que NO tiene techo de tokens todavía — riesgo residual conocido, no"
+        " resuelto acá, sin caso real que lo haya disparado aún) más el tiempo de ejecución del agente. Si"
+        " Voice corta antes de que la API responda, una rutina disparada tras horas sin uso (el caso que"
+        " motiva todo esto, docs/specs/Routines.spec.md) sigue fallando en frío aunque el timeout de"
+        " Ollama ya esté arreglado — hallazgo propio al implementar el pedido del"
         " supervisor (2026-09-25), no fue parte del pedido original.",
     )
     voice_audio_device: str = Field(

@@ -66,8 +66,11 @@ class VoicePipelineConfig:
     # de subir el timeout de OllamaProvider): este cliente HTTP tenía su
     # PROPIO timeout de 30s hardcodeado — subir solo el de Ollama no
     # alcanza, una rutina disparada en frío corta acá antes de que la API
-    # llegue a responder. Ver Settings.voice_api_request_timeout_seconds.
-    api_request_timeout_seconds: float = 90.0
+    # llegue a responder. Ver Settings.voice_api_request_timeout_seconds
+    # (120s — más margen que el timeout de Ollama en sí, 105s: este único
+    # request puede esperar sobre dos llamadas secuenciales a Ollama del
+    # lado de la API, no solo una).
+    api_request_timeout_seconds: float = 120.0
     # Auditoría de seguridad 2026-09-23, hallazgo CRÍTICO #1: POST /message
     # ahora exige `X-API-Key` — sin esto, VoicePipeline recibiría 401 en
     # cada intento. Vacío = mismo comportamiento que el server con
