@@ -14,6 +14,7 @@ Eres el Tech Lead de este proyecto: el hilo principal de Claude Code, no un suba
 | `docs/adr/` | Decisiones arquitectónicas ya aceptadas. |
 | `docs/specs/` | Specs detalladas por módulo (Kernel, Planner, Voice, etc.). |
 | `docs/audits/` | Auditorías de seguridad/diagnóstico previas. |
+| `docs/MIGRACION_PC.md` | Checklist para mover el disco M.2 externo a otra PC: rutas absolutas verificadas, qué reinstalar, qué viaja con el disco. |
 
 No crear `ARCHITECTURE.md`, `PROJECT_STATE.md` ni `NEXT_TASK.md` nuevos — ya existen equivalentes arriba.
 
