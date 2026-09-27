@@ -446,11 +446,42 @@ comportamiento en tests existentes.
   si el problema persiste después del reboot, esto probablemente
   necesite investigación de hardware/drivers más a fondo — reinstalar
   drivers NVIDIA, revisar temperaturas/alimentación de la GPU, o
-  aceptar correr Ollama forzado a CPU de forma permanente
-  `OLLAMA_GPU_OVERHEAD`/`num_gpu:0` hasta resolverlo).
+  aceptar correr Ollama forzado a CPU de forma permanente).
 - Poner un techo de tokens también en `brain/generate_response` (el
   riesgo residual anotado arriba) — no pedido esta ronda, señalado
   para la próxima.
+
+**Cómo forzar CPU de verdad en Ollama (2026-09-27, medido — `OLLAMA_GPU_OVERHEAD`/`num_gpu:0` de la nota anterior NO alcanzan solos):**
+probado en vivo, esto es lo que realmente funciona en esta máquina
+(Windows, Ollama con soporte CUDA + Vulkan):
+1. `OLLAMA_NUM_GPU` **no existe** como variable real de Ollama — no
+   hace nada, confirmado revisando el dump completo de config en el
+   log de arranque (`%LOCALAPPDATA%\Ollama\server.log`, línea
+   `msg="server config" env="map[...]"`).
+2. `CUDA_VISIBLE_DEVICES=""` (vacía) tampoco alcanza — Ollama excluye
+   CUDA pero **cae a Vulkan sobre la misma GPU física**
+   (`OLLAMA_VULKAN:true` está activo por default).
+3. Lo que funciona: **las dos** variables seteadas a `-1` —
+   `CUDA_VISIBLE_DEVICES=-1` Y `GGML_VK_VISIBLE_DEVICES=-1` — recién
+   ahí el log muestra `inference compute id=cpu library=cpu` (CPU
+   genuino, sin ningún backend de GPU).
+4. **`setx`/variable de usuario de Windows NO alcanza para efecto
+   inmediato** — un proceso ya corriendo (o lanzado desde el ícono de
+   la bandeja/Explorer) no ve una variable de usuario recién seteada
+   hasta un logoff/reboot completo (confirmado: así fue como
+   `OLLAMA_KEEP_ALIVE=-1` sí quedó activo — hubo un reboot real de por
+   medio entre setearla y verla aplicada). Para efecto inmediato sin
+   esperar reboot: matar `ollama.exe`, setear las variables con
+   `$env:...` en la sesión de PowerShell actual, y relanzar
+   `ollama serve` desde ahí (`Start-Process -FilePath "ollama"
+   -ArgumentList "serve" -RedirectStandardError <archivo>` para poder
+   confirmar en el log que quedó en `library=cpu`, ya que el proceso
+   lanzado a mano no escribe en `server.log` — solo lo hace el
+   lanzado por la GUI de Ollama).
+5. Las dos variables ya quedaron persistidas con `setx` en esta
+   máquina (van a aplicar solas después de un logoff/reboot) — **esto
+   no viaja con la migración de PC**, hay que volver a evaluarlo en la
+   máquina nueva si tiene GPU (ver `docs/MIGRACION_PC.md`, paso 7).
 
 #### Checklist de pruebas del usuario (2026-09-27) — 2 bugs reales del prompt del Planner, corregidos
 
@@ -543,6 +574,32 @@ confirmado sigue permitiendo ejecutar cualquier cosa. Tests
 actualizados (3 ya no reflejaban el comportamiento real) + 2 nuevos.
 Suite completa: 497 passed.
 
+**ESTADO DEL CHECKLIST al momento de migrar de PC (2026-09-27) — para
+que la próxima sesión no asuma que está terminado:**
+- ✅ Paso 1 (`/health`): probado, OK.
+- ✅ Paso 2 (conversación simple): probado — encontró el bug de
+  fecha/hora (sintaxis Unix), corregido en el prompt.
+- ✅ Paso 3 (memoria de sesión): no reportado explícitamente por el
+  usuario, asumido implícito en el resto de las pruebas.
+- ✅ Paso 4 (Git como agente real): probado — encontró el bug de
+  "este repositorio", corregido.
+- ✅ Paso 5 (filesystem): probado — encontró el bug de alias de
+  `path`, corregido.
+- ⬜ **Paso 6 (confirmación de acción destructiva): sin confirmar por
+  el usuario todavía.** Ahora es más importante probarlo que antes —
+  cubre también `process.run_command`/`run_script` desde el fix de
+  seguridad de hoy, no solo `filesystem.delete_file`.
+- ⬜ **Paso 7 (push-to-talk): sin re-probar después de todos los
+  cambios de Ollama de hoy** (modelo, timeouts, keep-alive). Ya se
+  había confirmado funcionando el 2026-09-25, pero eso fue antes de
+  todos los cambios de esta sesión.
+- ⏭️ Paso 8 (wake word por voz): salteado a propósito, no confiable
+  todavía (ver sección de wake word).
+- ⬜ Paso 9 (rutinas): opcional, no hay ninguna configurada.
+
+**Primera acción recomendada al retomar en la PC nueva, después de
+completar `docs/MIGRACION_PC.md`:** los pasos 6 y 7, en ese orden.
+
 ### Registro previo al contador vigente (no cuenta)
 
 - **2026-09-15 — descartado como día 1.** Se había anotado como día 1, pero del 14 al 20 el usuario casi no usó Aries (equipo apagado la mayoría de esos días). El contador reinició el 2026-09-20.
@@ -599,7 +656,37 @@ Historial completo de cada pieza construida (Kernel, Planner+Brain, los 4 `IAgen
 - `src/aries/api.py`: `_llm_provider`/`_kernel` se construyen dentro de `lifespan()` (uno nuevo por ciclo de arranque de la app, para no reutilizar un `httpx.AsyncClient` ya cerrado — ver commit `6576742`) pero **también se reasignan a globals de módulo** (`_llm_provider`, `_kernel`, `_kernel_run_task`) como puente de compatibilidad para `get_planner()` y para los tests de integración que los leen directo (`api._kernel_run_task`, etc.). **No es el diseño final, es deuda conocida:** con dos instancias de `app` corriendo en el mismo proceso, esos globals apuntarían a la última que arrancó, no a la que los llamó. Aceptable hoy porque solo existe una instancia de `app` por proceso; revisar si alguna vez hace falta correr más de una.
 
 ## Próximo paso recomendado
-Terminar de armar el dataset y entrenar el modelo custom de wake word "Hola Aries" en español (`docs/specs/WakeWordTraining.spec.md`, plan aprobado 2026-09-11/12) — la validación con hardware real de abajo ya diagnosticó la causa raíz de `hey_jarvis` (pronunciación en inglés que no matchea el training data, no un bug de audio/threshold) y esa parte quedó resuelta. Falta: grabar el resto de las tomas reales de "Hola Aries" (en curso), armar el dataset de negativos, entrenar, y luego integrar el `.onnx` resultante en `OpenWakeWordProvider` reemplazando `hey_jarvis`.
+**(Actualizado 2026-09-27 — el usuario está migrando de PC, ver `docs/MIGRACION_PC.md`.)**
+Primero: completar la migración siguiendo `docs/MIGRACION_PC.md` paso a
+paso (Python/venv fresco, Ollama + los 3 modelos, WSL2/Redis, drivers
+de GPU) y volver a arrancar con `.\scripts\start-aries.ps1`. Después,
+en la PC nueva: **terminar el checklist de pruebas de funciones**
+("Checklist de pruebas del usuario", sección Ollama/GPU más abajo) —
+se probaron los pasos 1-5 (salud, conversación simple, memoria, Git,
+filesystem) y se encontraron y corrigieron 3 bugs reales (prompt del
+Planner con contexto implícito/comandos Unix, alias de parámetro
+`path` en `FileSystemAgent`, y un hallazgo de seguridad real en
+`ProcessAgent.run_command`/`run_script` que no exigía confirmación).
+**Quedan sin confirmar por el usuario:** paso 6 (confirmación de
+acción destructiva — ahora también cubre `process.*`, no solo
+`filesystem.delete_file`), paso 7 (push-to-talk, re-probar después de
+los cambios de Ollama), paso 9 (rutinas, opcional, no hay ninguna
+configurada todavía). El paso 8 (wake word por voz) se salteó a
+propósito — no es confiable todavía, ver la sección de wake word más
+abajo.
+
+Una vez cerrado ese checklist, la tarea más grande que quedó anotada
+(pedido explícito del supervisor, no decisión unilateral) es mandar
+el esquema de parámetros de cada acción en el prompt del Planner —
+marcada como la causa raíz de 3 de los 4 bugs de hoy, priorizarla
+antes que seguir parcheando el prompt caso por caso.
+
+**Hilo aparte, en pausa, no perder de vista:** entrenar el modelo
+custom de wake word "Oye Aries" en español sigue sin resolver el
+problema real (ver "Entrenamiento del modelo custom" más abajo — la
+síntesis multi-voz mejoró la mediana pero no cerró la variabilidad
+entre semillas, y quedan varias cosas pendientes de decisión del
+usuario/supervisor ahí mismo, no repetidas acá).
 
 ## Reglas para mantener este archivo
 - Actualizar la tabla y "Qué existe implementado" al cerrar cada tarea, una línea por módulo
