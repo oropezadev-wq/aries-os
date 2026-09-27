@@ -342,6 +342,40 @@ class TestMissingParameters:
         assert result.error is not None
 
 
+class TestPathParamAliases:
+    """Bug real (2026-09-27, checklist de pruebas del usuario): el catálogo
+    que ve el LLM en el prompt del Planner solo lista nombres de acción, no
+    de parámetro — con qwen2.5:3b, "creá un archivo llamado test.txt en
+    <ruta>" generó `filename` en vez de `path`, fallando con
+    "missing 1 required positional argument: 'path'"."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("alias", ["file_path", "filename", "file_name", "dir_path", "directory", "folder_path", "folder"])
+    async def test_known_alias_gets_normalized_to_path(
+        self, agent: FileSystemAgent, tmp_path: Path, alias: str
+    ) -> None:
+        file_path = tmp_path / "test.txt"
+        kwargs = {alias: str(file_path), "content": "hola"}
+
+        result = await agent.execute("create_file", **kwargs)
+
+        assert result.status == ActionStatus.SUCCESS
+        assert file_path.read_text(encoding="utf-8") == "hola"
+
+    @pytest.mark.asyncio
+    async def test_explicit_path_wins_over_alias_if_both_present(
+        self, agent: FileSystemAgent, tmp_path: Path
+    ) -> None:
+        real_path = tmp_path / "real.txt"
+        decoy_path = tmp_path / "decoy.txt"
+
+        result = await agent.execute("create_file", path=str(real_path), filename=str(decoy_path))
+
+        assert result.status == ActionStatus.SUCCESS
+        assert real_path.exists()
+        assert not decoy_path.exists()
+
+
 class TestAllowedRoot:
     """Auditoría de seguridad 2026-09-23, hallazgo ALTO #3."""
 

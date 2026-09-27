@@ -41,6 +41,18 @@ class FileSystemAgent(IAgent):
 
     _DESTRUCTIVE_ACTIONS: frozenset[str] = frozenset({"delete_file"})
 
+    # Bug real (2026-09-27, checklist de pruebas del usuario): el catálogo
+    # que ve el LLM en el prompt del Planner solo lista nombres de acción
+    # ("create_file, write_file"), nunca nombres de parámetro — todos los
+    # handlers de acá exigen específicamente `path`, pero el modelo no
+    # tiene forma de saberlo y varía entre corridas (visto: `filename`,
+    # `file_name`, `file_path`), rompiendo con
+    # "missing 1 required positional argument: 'path'". Se normalizan acá
+    # los alias más comunes en vez de depender de que el modelo acierte el
+    # nombre exacto — más confiable que ajustar el prompt para esto solo,
+    # cubre cualquier corrida/modelo futuro sin volver a tocar el prompt.
+    _PATH_PARAM_ALIASES: tuple[str, ...] = ("file_path", "filename", "file_name", "dir_path", "directory", "folder_path", "folder")
+
     def __init__(self, allowed_root: str = "") -> None:
         self.logger: BoundLogger = get_logger(self.__class__.__name__)
         self._handlers: dict[str, Callable[..., Awaitable[_HandlerResult]]] = {
@@ -102,6 +114,19 @@ class FileSystemAgent(IAgent):
     async def is_available(self) -> bool:
         return True
 
+    def _normalize_path_param(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        """Si el LLM mandó un alias conocido en vez de `path` (ver
+        `_PATH_PARAM_ALIASES`), lo renombra — nunca pisa un `path` ya
+        presente."""
+        if "path" in kwargs:
+            return kwargs
+        for alias in self._PATH_PARAM_ALIASES:
+            if alias in kwargs:
+                kwargs = dict(kwargs)
+                kwargs["path"] = kwargs.pop(alias)
+                return kwargs
+        return kwargs
+
     async def execute(self, action: str, **kwargs: Any) -> ActionResult:
         canonical = self._ALIASES.get(action, action)
         handler = self._handlers.get(canonical)
@@ -111,6 +136,8 @@ class FileSystemAgent(IAgent):
                 status=ActionStatus.FAILED,
                 error=f"Acción desconocida para FileSystemAgent: '{action}'",
             )
+
+        kwargs = self._normalize_path_param(kwargs)
 
         if action == "create_file" and "overwrite" not in kwargs:
             kwargs = {**kwargs, "overwrite": False}
