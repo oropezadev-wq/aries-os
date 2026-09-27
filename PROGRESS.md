@@ -500,7 +500,48 @@ nuevos. Suite completa: 496 passed. Commit `985919b`.
 **Pendiente, no resuelto por tiempo:** la solución más completa sería
 mandar el esquema de parámetros de cada acción en el prompt del
 Planner (no solo los nombres de acción) — cubriría esto para los 4
-agentes, no solo `filesystem`. Anotado, no implementado hoy.
+agentes, no solo `filesystem`. **El supervisor lo marcó como la
+causa raíz de 3 de los 4 bugs de hoy** (nombres de parámetro
+inventados, "este repositorio" sin resolver, y probablemente la
+preferencia por `process.run_command` cuando las acciones específicas
+se ven subespecificadas) — pide priorizarlo como lo primero después
+de la migración, no como pendiente general: cada parche vía prompt
+suma tokens, puede generar conflictos entre reglas, y no es
+verificable con tests (a diferencia de la normalización en código de
+hoy). Anotado, no implementado hoy.
+
+#### HALLAZGO DE SEGURIDAD — `process.run_command`/`run_script` podían ejecutar sin confirmar (2026-09-27)
+
+El fix de prompt del bug #2 (preferir `git.*`/`filesystem.*` antes que
+`process.run_command`) es una preferencia, no un control de
+seguridad — el supervisor señaló que esto repite exactamente el error
+ya corregido en la auditoría al sacar `confirmed: bool` del cliente:
+la seguridad no puede depender de que el LLM se porte bien.
+
+Verificado antes de asumir el gap: el Planner sí exige
+`confirmation_id` server-side correctamente
+(`planner.py:245`, `_execute_plan`) — el problema estaba puramente en
+`ProcessAgent.requires_confirmation()`. La heurística anterior
+(`_looks_destructive`) solo confirmaba `run_command` si el primer
+token coincidía con una lista corta de nombres (`del`, `rm`,
+`format`, ...) — una herramienta no listada (ej. `powershell -Command
+"Remove-Item -Recurse ..."`) pasaba sin confirmar. Y **`run_script`
+nunca confirmaba, sin importar qué hiciera el script** — el hallazgo
+más grave, ya explotable hoy vía el Planner sin necesitar el agente
+de browsing que motivó originalmente la whitelist pendiente
+(`docs/audits/2026-09-23-security-audit.md`, ALTO #2 — corregido ahí
+también: la premisa de "acotado hasta browsing" era incorrecta).
+
+**Fix (commit `0cb1083`):** `requires_confirmation()` exige
+confirmación SIEMPRE para `run_command`/`run_script` (fail-closed,
+mismo criterio que `kill_process` ya usaba) — se removió la
+heurística por nombre en vez de ampliarla, porque cualquier lista es
+incompleta por diseño. **Sigue sin resolver, más grande y deliberado:
+la whitelist real de ejecutables (ALTO #2)** — confirmar cada
+`run_command`/`run_script` es más seguro que antes, pero una vez
+confirmado sigue permitiendo ejecutar cualquier cosa. Tests
+actualizados (3 ya no reflejaban el comportamiento real) + 2 nuevos.
+Suite completa: 497 passed.
 
 ### Registro previo al contador vigente (no cuenta)
 

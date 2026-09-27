@@ -112,6 +112,22 @@ la falta de auth del hallazgo #1) y pasa a ser directamente explotable (un
 LLM eligiendo qué ejecutar con contenido web no confiable de por medio).
 Anotado en `docs/VISION.md`, sección "Etapa siguiente dentro de la Fase 1".
 
+**Corrección (2026-09-27), mitigación parcial, hallazgo del
+supervisor:** la premisa de "acotado hasta el agente de browsing" era
+incorrecta — ya era explotable sin browsing, solo con el Planner
+eligiendo mal (`process.run_command` con una herramienta no cubierta
+por `_looks_destructive()`, ej. `powershell -Command "Remove-Item
+-Recurse ..."`, o `run_script`, que nunca requería confirmación sin
+importar el contenido del script). **Mitigado (commit `0cb1083`):**
+`requires_confirmation()` ahora exige confirmación SIEMPRE para
+`run_command`/`run_script` (fail-closed, mismo criterio que
+`kill_process` ya usaba), sin depender de reconocer el comando
+puntual — se removió la heurística por nombre en vez de ampliarla.
+**Sigue sin resolver, y sigue siendo el bloqueante real para
+browsing:** la whitelist de ejecutables en sí — confirmar cada
+`run_command`/`run_script` es más seguro que antes, pero una vez
+confirmado sigue permitiendo ejecutar cualquier cosa.
+
 ### ALTO — 3. `FileSystemAgent`/`DatabaseAgent` sin restricción de rutas
 
 **Archivos:** `src/aries/agents/filesystem/agent.py:129+`,
