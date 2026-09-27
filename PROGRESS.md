@@ -452,6 +452,39 @@ comportamiento en tests existentes.
   riesgo residual anotado arriba) — no pedido esta ronda, señalado
   para la próxima.
 
+#### Checklist de pruebas del usuario (2026-09-27) — 2 bugs reales del prompt del Planner, corregidos
+
+Corriendo el checklist de funciones probables contra `qwen2.5:3b` en
+CPU (`CUDA_VISIBLE_DEVICES=-1`/`GGML_VK_VISIBLE_DEVICES=-1`, ver
+sección de GPU arriba — `CUDA_VISIBLE_DEVICES=""` sola no alcanza,
+Ollama cae a Vulkan sobre la misma GPU; hacen falta las dos variables
+seteadas en la sesión que lanza `ollama serve`, no solo `setx`
+persistido, que necesita logoff/reboot para aplicar), el usuario
+encontró 2 fallos reales:
+
+1. **"este repositorio"/"la carpeta actual" sin ruta concreta** se
+   copiaba literal como parámetro (`repo_path: "este repositorio"`),
+   rompiendo la acción — `GitAgent`/`FileSystemAgent` ya tienen un
+   default razonable (`.`) si el parámetro falta, nunca se usaba.
+2. Reportado como **comandos en sintaxis Unix en vez de Windows**
+   para pedidos de fecha/hora.
+
+**Fix iterado y medido contra Ollama real** (no a ojo — 4 versiones
+del prompt probadas): la primera iteración (agregar solo la regla de
+sintaxis Windows) introdujo una regresión nueva: el modelo empezó a
+preferir `process.run_command` con comandos crudos (`git status`,
+`del archivo`) en vez de las acciones específicas de
+`git`/`filesystem` que ya existen — bypasea la lógica de confirmación
+específica de cada agente. La versión final agrega también "usar
+SIEMPRE la acción específica antes que `process.*`". Verificado con
+el prompt REAL de `_build_intent_prompt` (no una reconstrucción a
+mano) contra Ollama real — ambos casos reportados corregidos. Suite
+completa: 488 passed. Commit `191cbfb`.
+
+**Pendiente:** el usuario reinicia Aries para levantar el fix y sigue
+con el resto del checklist (filesystem, confirmación destructiva,
+push-to-talk) antes de migrar de PC.
+
 ### Registro previo al contador vigente (no cuenta)
 
 - **2026-09-15 — descartado como día 1.** Se había anotado como día 1, pero del 14 al 20 el usuario casi no usó Aries (equipo apagado la mayoría de esos días). El contador reinició el 2026-09-20.
