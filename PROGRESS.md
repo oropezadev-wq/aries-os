@@ -485,6 +485,23 @@ completa: 488 passed. Commit `191cbfb`.
 con el resto del checklist (filesystem, confirmación destructiva,
 push-to-talk) antes de migrar de PC.
 
+**Bug #3 del mismo checklist, paso 5 (filesystem):** "creá un archivo
+llamado test.txt en `<ruta>`" falló con
+`FileSystemAgent._write_file() missing 1 required positional argument: 'path'`.
+Causa raíz: el catálogo del prompt solo lista nombres de acción, nunca
+de parámetro — los 5 handlers de `FileSystemAgent` exigen
+específicamente `path`, el modelo varía entre corridas (`filename`,
+`file_name`, `file_path`). **Fix (más confiable que ajustar el
+prompt):** `FileSystemAgent._normalize_path_param()` acepta los alias
+comunes y los renombra a `path` antes de llamar al handler — cubre
+cualquier corrida/modelo futuro sin volver a tocar el prompt. 8 tests
+nuevos. Suite completa: 496 passed. Commit `985919b`.
+
+**Pendiente, no resuelto por tiempo:** la solución más completa sería
+mandar el esquema de parámetros de cada acción en el prompt del
+Planner (no solo los nombres de acción) — cubriría esto para los 4
+agentes, no solo `filesystem`. Anotado, no implementado hoy.
+
 ### Registro previo al contador vigente (no cuenta)
 
 - **2026-09-15 — descartado como día 1.** Se había anotado como día 1, pero del 14 al 20 el usuario casi no usó Aries (equipo apagado la mayoría de esos días). El contador reinició el 2026-09-20.
