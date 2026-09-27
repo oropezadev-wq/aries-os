@@ -379,13 +379,48 @@ class Planner:
         if context:
             history = "\n".join(context)
             context_block = f"\nContexto reciente de esta conversación (más antiguo primero):\n{history}\n"
+        # Reglas agregadas 2026-09-27, medidas contra qwen2.5:3b real (no
+        # estimadas — ver PROGRESS.md, "checklist de pruebas del usuario"):
+        # dos fallos reales encontrados en producción.
+        # (1) "este repositorio"/"la carpeta actual" sin ruta concreta se
+        #     copiaba literal como parámetro (ej. repo_path="este
+        #     repositorio"), rompiendo la acción — cada agente ya tiene un
+        #     default razonable (directorio actual) si el parámetro falta,
+        #     nunca se usaba porque el modelo lo pisaba con la frase cruda.
+        # (2) al agregar la regla de sintaxis Windows para process.*, el
+        #     modelo empezó a preferir process.run_command con comandos
+        #     crudos (`git status`, `del archivo`) en vez de las acciones
+        #     específicas de git/filesystem que ya existen — bypasea la
+        #     lógica de confirmación específica de cada agente. La regla de
+        #     "acción específica antes que process.*" corrige esto (medido:
+        #     sin ella, "listá la carpeta y hacé git status" pasaba por
+        #     process.run_command("git status") en vez de git.status).
+        rules = (
+            "Reglas importantes:\n"
+            '- Si el usuario se refiere a algo implícito sin dar un valor concreto '
+            '(ej. "este repositorio", "la carpeta actual", "acá"), OMITÍ ese parámetro '
+            '(no lo incluyas en "parameters") y ejecutá la acción igual — cada agente ya usa '
+            "un valor por default razonable (el directorio actual) cuando el parámetro falta. "
+            'Omitir el parámetro NO significa dejar "steps" vacío: la acción se ejecuta igual, '
+            "solo sin ese parámetro.\n"
+            "- Usá SIEMPRE la acción específica de un agente (git.*, filesystem.*, database.*) "
+            "en vez de process.run_command/run_script cuando esa acción específica exista y "
+            'cubra el pedido — ej. para git usá git.status, NUNCA process.run_command con '
+            '"git status"; para archivos usá filesystem.delete_file/create_file, NUNCA '
+            'process.run_command con "del"/"echo". process.run_command es SOLO para lo que '
+            "ningún otro agente cubre.\n"
+            "- Si de verdad necesitás process.run_command/run_script, generalo en sintaxis de "
+            "Windows (cmd o PowerShell), nunca sintaxis Unix/bash."
+        )
         return (
-            "Sos el módulo de planificación de Aries OS. Interpretá el pedido "
-            "del usuario y devolvé ÚNICAMENTE un JSON (sin texto adicional, "
-            f"sin bloques de markdown) con este esquema exacto:\n{schema}\n\n"
+            "Sos el módulo de planificación de Aries OS, corriendo en Windows. "
+            "Interpretá el pedido del usuario y devolvé ÚNICAMENTE un JSON "
+            f"(sin texto adicional, sin bloques de markdown) con este esquema exacto:\n{schema}\n\n"
             f"Agentes disponibles y sus acciones:\n{catalog}\n"
             f"{context_block}\n"
-            'Si el pedido no se puede cumplir con ninguna acción disponible, '
+            f"{rules}\n\n"
+            'Si el pedido no se puede cumplir con NINGUNA acción disponible (no por faltar un '
+            'parámetro que tiene default, sino porque ninguna acción del catálogo aplica), '
             'devolvé "steps": [].\n\n'
             f'Pedido del usuario: "{user_input}"'
         )
