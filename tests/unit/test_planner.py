@@ -540,15 +540,23 @@ class TestMultiStepPlan:
 class TestEndToEndOtherAgents:
     @pytest.mark.asyncio
     async def test_process_agent_run_command(
-        self, agent_manager: AgentManager, memory: InMemoryStore
+        self,
+        agent_manager: AgentManager,
+        memory: InMemoryStore,
+        confirmation_redis: redis_asyncio.Redis,
     ) -> None:
+        # ProcessAgent.run_command exige confirmación SIEMPRE desde el
+        # 2026-09-27 (fail-closed, hallazgo del supervisor — ver
+        # docstring de ProcessAgent) — ya no ejecuta directo como antes.
         command = f'"{sys.executable}" -c "print(6*7)"'
         llm = FakeLLMProvider(
             [_intent([{"agent_name": "process", "action": "run_command", "parameters": {"command": command}}]), "El resultado es 42."]
         )
-        planner = Planner(llm, agent_manager, AsyncEventBus(), memory)
+        planner = Planner(llm, agent_manager, AsyncEventBus(), memory, redis_client=confirmation_redis)
 
-        result = await planner.handle("cuánto es 6 por 7")
+        pending = await planner.handle("cuánto es 6 por 7")
+        assert pending.needs_confirmation is True
+        result = await planner.confirm(pending.confirmation_id, "confirmo")
 
         assert result.success is True
         assert result.steps[0].output.strip() == "42"

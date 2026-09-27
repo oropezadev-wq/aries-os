@@ -27,10 +27,25 @@ de en PROGRESS.md para que vivan junto al código):
   como caracteres literales en cada token, así que `_split_command()` las
   quita a mano después de tokenizar (ver su docstring). Verificado
   empíricamente: rutas con y sin comillas, con y sin espacios.
-- `requires_confirmation()` heurísticamente marca patrones destructivos
-  conocidos en `run_command`, pero **no es un sandbox ni una garantía de
-  seguridad** — sigue siendo responsabilidad de quien llama pedir
-  confirmación antes de ejecutar.
+- `requires_confirmation()` exige confirmación SIEMPRE para
+  `run_command`/`run_script`/`kill_process`, sin heurística de contenido
+  (fail-closed, 2026-09-27, hallazgo del supervisor). Versión anterior:
+  `run_command` solo confirmaba si el primer token del comando coincidía
+  con una lista corta de nombres conocidos como destructivos (`del`,
+  `rm`, ...) y `run_script` nunca confirmaba — bypasseable con cualquier
+  herramienta no listada (ej. `powershell -Command "Remove-Item
+  -Recurse ..."`) o cualquier script, sin pasar nunca por
+  `confirmation_id`/la frase de confirmación. Depender de que el LLM
+  elija un comando que "se vea" destructivo es el mismo error que ya se
+  corrigió en la auditoría de seguridad al sacar `confirmed: bool` del
+  cliente — la seguridad no puede depender de que el LLM se porte bien.
+  **Sigue pendiente, más grande y deliberadamente no resuelto acá:** una
+  whitelist real de comandos permitidos (ver `docs/audits/2026-09-23-security-audit.md`,
+  ALTO #2) — confirmar cada `run_command`/`run_script` es más seguro que
+  antes, pero sigue permitiendo ejecutar cualquier cosa una vez
+  confirmado. Ese trabajo más grande queda para cuando se lo priorice
+  explícitamente (ya estaba anotado como bloqueante para un futuro
+  agente de browsing).
 - `run_script` usa `shell=False` con una lista de argv explícita
   (intérprete + ruta + args), porque ahí sí controlamos cada elemento del
   comando.
@@ -73,7 +88,6 @@ import csv
 import io
 import os
 import platform
-import re
 import shlex
 import signal
 import subprocess
@@ -91,11 +105,6 @@ from ...logging import get_logger
 _HandlerResult = tuple[str, dict[str, Any]]
 
 DEFAULT_TIMEOUT_SECONDS = 30.0
-
-_DESTRUCTIVE_COMMAND_NAMES: frozenset[str] = frozenset(
-    {"rm", "del", "erase", "format", "rd", "rmdir", "diskpart", "shutdown", "mkfs", "dd"}
-)
-_SHELL_SEPARATORS = re.compile(r"[;&|]+")
 
 _INTERPRETERS_BY_SUFFIX: dict[str, list[str]] = {
     ".py": [sys.executable],
@@ -129,12 +138,21 @@ class ProcessAgent(IAgent):
             "get_process_info",
         ]
 
-    def requires_confirmation(self, action: str, command: str | None = None, **_: Any) -> bool:
-        if action == "kill_process":
-            return True
-        if action == "run_command" and command is not None:
-            return self._looks_destructive(command)
-        return False
+    def requires_confirmation(self, action: str, **_: Any) -> bool:
+        # Fail-closed (2026-09-27, hallazgo del supervisor — ver docstring
+        # del módulo): `run_command`/`run_script` exigen confirmación
+        # SIEMPRE, sin importar el contenido del comando/script, mismo
+        # criterio que `kill_process` ya usaba sin heurística. Antes,
+        # `run_command` solo confirmaba si el primer token coincidía con
+        # una lista corta de nombres (`del`, `rm`, ...) — una herramienta
+        # cualquiera no listada (ej. `powershell -Command "Remove-Item
+        # -Recurse ..."`) pasaba sin confirmar, y `run_script` nunca
+        # confirmaba, sin importar qué hiciera el script. Depender de que
+        # el LLM elija un comando que "se vea" destructivo es exactamente
+        # el mismo error que ya se corrigió en la auditoría de seguridad
+        # al sacar `confirmed: bool` del cliente — la seguridad no puede
+        # depender de que el LLM se porte bien.
+        return action in {"kill_process", "run_command", "run_script"}
 
     async def is_available(self) -> bool:
         return True
@@ -190,32 +208,6 @@ class ProcessAgent(IAgent):
             error=error,
             execution_time_ms=execution_time_ms,
         )
-
-    @staticmethod
-    def _looks_destructive(command: str) -> bool:
-        """Heurística de mejor esfuerzo, NO un control de seguridad real.
-
-        Revisa el primer token de cada segmento separado por `;`/`&`/`|`
-        contra una lista corta de comandos conocidos como destructivos.
-        No detecta ofuscación, alias, ni comandos encadenados de formas
-        más exóticas que separadores de shell comunes.
-
-        Nota: desde que `_run_command` usa `shell=False`, estos separadores
-        ya no encadenan comandos de verdad en la ejecución (se pasan como
-        argv literal, no se interpretan) — pero el análisis multi-segmento
-        se mantiene igual porque sigue siendo una heurística de texto válida
-        sobre el string que el caller piensa ejecutar, independiente de
-        cómo `execute()` termine invocándolo.
-        """
-        for segment in _SHELL_SEPARATORS.split(command):
-            segment = segment.strip().strip("\"'")
-            if not segment:
-                continue
-            first_token = segment.split(maxsplit=1)[0]
-            name = Path(first_token).stem.lower().strip("\"'")
-            if name in _DESTRUCTIVE_COMMAND_NAMES:
-                return True
-        return False
 
     @staticmethod
     def _split_command(command: str) -> list[str]:

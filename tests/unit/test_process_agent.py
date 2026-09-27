@@ -38,28 +38,43 @@ class TestMetadata:
         assert agent.requires_confirmation("kill_process") is True
 
     @pytest.mark.parametrize(
-        "command", ["rm -rf /tmp", "del archivo.txt", "format c:", "echo hola && rm -rf /"]
+        "command",
+        [
+            "rm -rf /tmp",
+            "del archivo.txt",
+            "format c:",
+            "echo hola && rm -rf /",
+            "echo hola",
+            "dir",
+            "python --version",
+            # Hallazgo del supervisor (2026-09-27): una herramienta no
+            # listada en la vieja heurística por nombre pasaba sin
+            # confirmar — fail-closed ya no depende de reconocer el
+            # comando puntual, confirma siempre.
+            'powershell -Command "Remove-Item -Recurse -Force C:\\Users\\x\\Documents"',
+        ],
     )
-    def test_requires_confirmation_true_for_known_destructive_commands(
+    def test_requires_confirmation_true_for_run_command_regardless_of_content(
         self, agent: ProcessAgent, command: str
     ) -> None:
         assert agent.requires_confirmation("run_command", command=command) is True
 
-    @pytest.mark.parametrize("command", ["echo hola", "dir", "python --version"])
-    def test_requires_confirmation_false_for_benign_commands(
-        self, agent: ProcessAgent, command: str
-    ) -> None:
-        assert agent.requires_confirmation("run_command", command=command) is False
-
-    def test_requires_confirmation_false_for_run_command_without_content(
+    def test_requires_confirmation_true_for_run_command_without_content(
         self, agent: ProcessAgent
     ) -> None:
-        # Sin el kwarg `command` no hay forma de evaluar el contenido; el
-        # default es False (no bloquear a ciegas), no True.
-        assert agent.requires_confirmation("run_command") is False
+        # Fail-closed: sin el kwarg `command` tampoco hay excepción — no
+        # hay forma de evaluar contenido que no se pidió evaluar más.
+        assert agent.requires_confirmation("run_command") is True
 
-    @pytest.mark.parametrize("action", ["run_script", "list_processes", "get_process_info"])
-    def test_requires_confirmation_false_for_non_destructive_actions(
+    def test_requires_confirmation_true_for_run_script_regardless_of_content(
+        self, agent: ProcessAgent
+    ) -> None:
+        # Antes NUNCA confirmaba, sin importar qué hiciera el script —
+        # el hallazgo más grave del supervisor.
+        assert agent.requires_confirmation("run_script", path="cualquier_cosa.py") is True
+
+    @pytest.mark.parametrize("action", ["list_processes", "get_process_info"])
+    def test_requires_confirmation_false_for_read_only_actions(
         self, agent: ProcessAgent, action: str
     ) -> None:
         assert agent.requires_confirmation(action) is False
